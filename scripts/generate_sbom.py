@@ -24,15 +24,15 @@ def generate_cyclonedx_sbom(
         {
             "type": "framework",
             "name": "fastapi",
-            "version": "0.110.3",
-            "purl": "pkg:pypi/fastapi@0.110.3",
+            "version": "0.115.8",
+            "purl": "pkg:pypi/fastapi@0.115.8",
             "licenses": [{"license": {"id": "MIT"}}],
         },
         {
             "type": "library",
             "name": "uvicorn",
-            "version": "0.28.1",
-            "purl": "pkg:pypi/uvicorn@0.28.1",
+            "version": "0.34.0",
+            "purl": "pkg:pypi/uvicorn@0.34.0",
             "licenses": [{"license": {"id": "BSD-3-Clause"}}],
         },
         {
