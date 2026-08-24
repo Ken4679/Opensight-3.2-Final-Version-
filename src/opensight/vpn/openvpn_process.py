@@ -488,6 +488,7 @@ class OpenVPNProcessManager(VPNBackend):
                 self._leak_guard.set_split_tunnel_mode(False)
                 self._routing_mode = "global"
 
+            self._set_state(VPNConnectionState.DISCONNECTED, "VPN 已安全断开")
             return True
 
         self._set_state(VPNConnectionState.DISCONNECTING, "正在安全断开...")

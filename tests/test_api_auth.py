@@ -44,7 +44,7 @@ def test_protected_endpoints_reject_without_token(temp_paths):
         ("GET", "/api/credentials"),
         ("GET", "/api/vpn/status"),
         ("GET", "/api/routing/rules"),
-        ("GET", "/api/routing/apps"),
+        ("GET", "/api/routing/installed-apps"),
         ("POST", "/api/probe/start"),
         ("POST", "/api/probe/stop"),
         ("POST", "/api/vpn/disconnect"),

@@ -43,19 +43,32 @@ def test_vpn_disconnect_idempotent(temp_paths):
 def test_vpn_connect_with_missing_ovpn_file(temp_paths):
     mgr = OpenVPNProcessManager(temp_paths)
     fake_node = LogicalNode(
-        id="test_node_missing",
+        node_id="test_node_missing",
+        provider="ProtonVPN",
         server_name="Missing Node",
         country="JP",
+        country_code="JP",
         city="Tokyo",
-        endpoints=[Endpoint(ip_or_domain="1.2.3.4", port=443, protocol="tcp", profile_path=str(temp_paths.profiles_dir / "non_existent.ovpn"))],
-        primary_endpoint=Endpoint(ip_or_domain="1.2.3.4", port=443, protocol="tcp", profile_path=str(temp_paths.profiles_dir / "non_existent.ovpn"))
+    )
+    fake_ep = Endpoint(
+        endpoint_id="ep_missing",
+        node_id="test_node_missing",
+        profile_id="prof_missing",
+        protocol="tcp",
+        host="1.2.3.4",
+        port=443,
     )
 
     creds = OpenVPNCredentials(username="user", password="pwd")
-    ok = mgr.connect(fake_node, creds)
+    ok = mgr.connect(
+        node=fake_node,
+        endpoint=fake_ep,
+        profile_path=str(temp_paths.profiles_dir / "non_existent.ovpn"),
+        credentials=creds,
+    )
     # Must fail safely without crash and return False, entering FAILED or DISCONNECTED state
     assert not ok
-    assert mgr.get_state() in (VPNConnectionState.FAILED, VPNConnectionState.DISCONNECTED)
+    assert mgr.get_state() in (VPNConnectionState.FAILED.value, VPNConnectionState.DISCONNECTED.value)
 
 def test_vpn_connect_with_malformed_ovpn(temp_paths):
     # Malformed OVPN containing dangerous directive
@@ -64,19 +77,32 @@ def test_vpn_connect_with_malformed_ovpn(temp_paths):
 
     mgr = OpenVPNProcessManager(temp_paths)
     fake_node = LogicalNode(
-        id="bad_node",
+        node_id="bad_node",
+        provider="ProtonVPN",
         server_name="Bad Node",
         country="US",
+        country_code="US",
         city="LA",
-        endpoints=[Endpoint(ip_or_domain="1.2.3.4", port=443, protocol="tcp", profile_path=str(bad_ovpn))],
-        primary_endpoint=Endpoint(ip_or_domain="1.2.3.4", port=443, protocol="tcp", profile_path=str(bad_ovpn))
+    )
+    fake_ep = Endpoint(
+        endpoint_id="ep_bad",
+        node_id="bad_node",
+        profile_id="prof_bad",
+        protocol="tcp",
+        host="1.2.3.4",
+        port=443,
     )
 
     creds = OpenVPNCredentials(username="user", password="pwd")
-    ok = mgr.connect(fake_node, creds)
+    ok = mgr.connect(
+        node=fake_node,
+        endpoint=fake_ep,
+        profile_path=str(bad_ovpn),
+        credentials=creds,
+    )
     # Security validation must block it
     assert not ok
-    assert mgr.get_state() in (VPNConnectionState.FAILED, VPNConnectionState.DISCONNECTED)
+    assert mgr.get_state() in (VPNConnectionState.FAILED.value, VPNConnectionState.DISCONNECTED.value)
 
 def test_vpn_killswitch_failure_resilience(temp_paths):
     mgr = OpenVPNProcessManager(temp_paths)
@@ -86,13 +112,13 @@ def test_vpn_killswitch_failure_resilience(temp_paths):
         result = mgr.enable_kill_switch()
         assert result is False
         # State reflects actual failure
-        assert mgr.is_kill_switch_active() is False
+        assert mgr.is_kill_switch_active is False
 
     # Mock clean disable
     with patch.object(mgr._leak_guard, "remove_app_kill_switch", return_value=True):
         disable_result = mgr.disable_kill_switch()
         assert disable_result is True
-        assert mgr.is_kill_switch_active() is False
+        assert mgr.is_kill_switch_active is False
 
 
 def test_vpn_abnormal_process_crash_recovery(temp_paths):
@@ -105,13 +131,13 @@ def test_vpn_abnormal_process_crash_recovery(temp_paths):
     mock_proc.poll.return_value = 1  # Process crashed with exit code 1
     mock_proc.pid = 99999
 
-    mgr._process = mock_proc
+    mgr._proc = mock_proc
     mgr._state = VPNConnectionState.CONNECTED
 
     # When monitor checks status or disconnect is triggered after crash
     mgr.disconnect()
-    assert mgr.get_state() == VPNConnectionState.DISCONNECTED
-    assert mgr._process is None
+    assert mgr.get_state() == VPNConnectionState.DISCONNECTED.value
+    assert mgr._proc is None
 
 
 def test_vpn_credential_auth_failure_handling(temp_paths):
@@ -124,12 +150,20 @@ def test_vpn_credential_auth_failure_handling(temp_paths):
     safe_ovpn.write_text("client\ndev tun\nremote 1.2.3.4 1194 udp\n", encoding="utf-8")
 
     fake_node = LogicalNode(
-        id="auth_fail_node",
+        node_id="auth_fail_node",
+        provider="ProtonVPN",
         server_name="Auth Node",
         country="US",
+        country_code="US",
         city="LA",
-        endpoints=[Endpoint(ip_or_domain="1.2.3.4", port=1194, protocol="udp", profile_path=str(safe_ovpn))],
-        primary_endpoint=Endpoint(ip_or_domain="1.2.3.4", port=1194, protocol="udp", profile_path=str(safe_ovpn))
+    )
+    fake_ep = Endpoint(
+        endpoint_id="ep_auth_fail",
+        node_id="auth_fail_node",
+        profile_id="prof_auth_fail",
+        protocol="udp",
+        host="1.2.3.4",
+        port=1194,
     )
 
     creds = OpenVPNCredentials(username="invalid_user", password="wrong_password")
@@ -142,7 +176,12 @@ def test_vpn_credential_auth_failure_handling(temp_paths):
         mock_popen.return_value = mock_instance
 
         # Even with mock spawn, the manager handles non-zero exit code cleanly
-        ok = mgr.connect(fake_node, creds)
+        ok = mgr.connect(
+            node=fake_node,
+            endpoint=fake_ep,
+            profile_path=str(safe_ovpn),
+            credentials=creds,
+        )
         # Should return boolean status safely
         assert isinstance(ok, bool)
 
