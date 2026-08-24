@@ -1,0 +1,20 @@
+[package]
+name = "opensight"
+version = "3.2.0"
+description = "OpenSight Desktop App"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2.0.0", features = ["tray-icon", "image-ico", "image-png"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+getrandom = { version = "0.2", features = ["js"] }
+windows = { version = "0.52", features = [
+    "Win32_System_JobObjects",
+    "Win32_Security",
+    "Win32_Foundation",
+    "Win32_System_Threading"
+] }
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }

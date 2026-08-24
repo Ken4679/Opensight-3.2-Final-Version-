@@ -1,0 +1,89 @@
+name: Tagged Release Gate
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-build:
+    name: Build, Smoke Test & Release
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. 配置 Python 环境
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # 2. 配置 Node.js (React 前端编译环境)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: web/package.json
+
+      # 3. 配置 Rust (Tauri 宿主编译环境)
+      - uses: dtolnay/rust-toolchain@stable
+
+      # 4. 配置 GnuPG
+      - name: Setup GnuPG from Pre-installed Git
+        shell: powershell
+        run: |
+          "C:\Program Files\Git\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      # 5. 安装 Python 依赖 (通过锁文件保证可复现)
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.lock
+          pip install -r requirements-dev.txt
+          pip install -e .
+
+      # 6. 安装前端与 Tauri CLI 依赖
+      - name: Install Web & Tauri dependencies
+        run: |
+          npm install
+          cd web
+          npm install
+          cd ..
+
+      # 7. 执行全量单元测试与覆盖率检查
+      - name: Full Test Suite
+        run: pytest --cov=opensight tests/
+
+      # 8. 编译可执行文件 (Python 核心 + Web 前端 + Tauri 宿主)
+      - name: Build Executable
+        run: python scripts/build_portable.py
+
+      # 9. 下载并强校验官方 OpenVPN 及 sing-box 运行时
+      - name: Fetch and Verify Official Runtimes
+        run: python scripts/fetch_components.py --dest dist/OpenSight
+
+      # 10. 执行严格冒烟测试门禁
+      - name: Run Smoke Test Gate
+        run: python scripts/smoke_test.py dist/OpenSight/OpenSight.exe
+
+      # 11. 封装便携式发布包与安全哈希清单
+      - name: Package Portable Bundle
+        run: python scripts/package_release.py --commit ${{ github.sha }}
+
+      # 12. 校验清单与来源域名白名单
+      - name: Verify Manifest & Provenance
+        run: |
+          python scripts/verify_manifest.py dist/staging
+          python scripts/verify_provenance.py dist/staging
+
+      # 13. 自动发布正式 Release 到 GitHub
+      - name: Publish Official Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false

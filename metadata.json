@@ -1,0 +1,6 @@
+{
+  "name": "OpenSight",
+  "description": "OpenSight 3.2 智能 VPN 节点质量评估与应用级路由管理系统",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
