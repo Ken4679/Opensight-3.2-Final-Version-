@@ -1,8 +1,5 @@
-"""OpenSight 3.2 — Local-first OpenVPN node discovery and measurement tool."""
-__version__ = "3.2.0"
-__author__ = "OpenSight Contributors"
-
-# Starlette 1.x / FastAPI compatibility layer for router initialization
+"""Pytest configuration and environment setup."""
+# Starlette 1.x / FastAPI compatibility layer
 try:
     import starlette.routing
     import starlette.applications
