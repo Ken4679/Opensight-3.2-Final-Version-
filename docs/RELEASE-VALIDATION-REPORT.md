@@ -1,4 +1,4 @@
-# OpenSight 3.1 发布验证报告 (Release Validation Report)
+# OpenSight 3.2 发布验证报告 (Release Validation Report)
 
 ## 验证结论与门禁状态
 * **单元测试套件:** PASS (无网络隔离套件覆盖)

@@ -20,7 +20,7 @@ jobs:
       # 2. 配置 Bun 环境 (前端依赖与构建)
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.1.27
 
       # 3. 配置 Rust (Tauri 宿主编译环境)
       - uses: dtolnay/rust-toolchain@stable
