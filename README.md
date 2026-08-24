@@ -27,7 +27,7 @@ OpenSight 从底层架构解决这些问题：
 2. **零隧道并发测速**：无需连上 VPN 即可精准测出节点延迟、抖动和质量评分，测速全程不影响本地网络访问；
 3. **多端口全自动优选**：一个节点支持的多个备选端口（如 443、80、8443 等）全量并发测速，并在界面自动合并呈现最优端口；
 4. **灵活的应用白名单分流**：鼠标一键点选，指定浏览器或特定软件走代理，微信/游戏/国内网站一律走本地家庭宽带，互不干扰；
-5. **硬件级凭据保险箱**：VPN 账号密码采用 Windows 原生 DPAPI 硬件加密，不存明文文本。
+5. **Windows 原生 DPAPI 凭据保护**：VPN 账号密码采用 Windows 原生 DPAPI (`CryptProtectData`) 用户级安全加密存储，绝不存明文文本。
 
 ---
 
@@ -47,7 +47,7 @@ OpenSight 从底层架构解决这些问题：
 ### 3. 🛡️ 零信任安全与零断网保障
 * **不碰系统代理 (No System Proxy Hijack)**：不改写 Windows 系统的 127.0.0.1 代理设置，从根源避免“软件关闭/异常退出后电脑瞬间断网打不开网页”的经典故障。
 * **零信任 OVPN 配置解析**：内置 AST 词法安全分析，自动过滤并阻断 `.ovpn` 中可能包含的脚本指令（如 `up`, `down`, `script-security` 等），防范任意代码执行（RCE）风险。
-* **Windows DPAPI 硬件级加密**：VPN 用户名和密码经由 Windows 系统底层 `CryptProtectData` 绑定主板与当前用户账户加密，不以明文 `.txt` 或普通 JSON 存储。
+* **Windows DPAPI 用户级加密保护**：VPN 用户名和密码经由 Windows 系统底层 `CryptProtectData` 绑定当前登录用户账户上下文加密存储，不以明文 `.txt` 或普通 JSON 存储。
 * **原子级 KillSwitch 防火墙**：异常断线时自动拦截非白名单出站流量，防止未加密的敏感数据泄漏。
 
 ---
@@ -103,7 +103,7 @@ OpenSight 支持 **3 种便捷导入方式**，点击主界面左上角 **【+ �
 │                  FastAPI 核心服务 (Python 3.11+)             │
 │  - Windows JobObject 绑定  - 退出时内核自动回收全部子进程与网卡 │
 ├──────────────────────────────┬──────────────────────────────┤
-│  凭据保险箱 (DPAPI 硬件加密)  │  配置安全过滤 (AST 词法白名单) │
+│  凭据保险箱 (DPAPI 用户级加密)│  配置安全过滤 (AST 词法白名单) │
 ├──────────────────────────────┼──────────────────────────────┤
 │  KillSwitch 防火墙事务管理    │  Split-DNS 防泄漏与分流引擎   │
 ├──────────────────────────────┼──────────────────────────────┤
@@ -152,38 +152,54 @@ OpenSight 为纯绿色免安装软件。如果未来不需要使用，清理非�
 
 ---
 
-## 🛠️ 开发者与本地构建指南 (Developer Guide)
-
-如果你希望从源代码在本地编译构建：
+## 🛠️ 开发者与构建指南 (Developer & Build Guide)
 
 ### 环境要求
 - Windows 10/11 x64
 - [Python 3.11+](https://www.python.org/)
-- [Node.js 18+](https://nodejs.org/) 与 [Rust 工具链](https://rustup.rs/) (用于 Tauri 构建)
+- [Bun](https://bun.sh/) (推荐用于前端构建与锁定依赖) 或 Node.js 18+
+- [Rust 工具链](https://rustup.rs/) (用于 Tauri 宿主程序构建)
 
-### 1. 安装后端环境与依赖
+### 1. 开发者日常环境配置 (Developer Setup)
 ```powershell
+# 1. 配置 Python 虚拟环境与依赖
 python -m venv .venv
 .venv\Scripts\activate
-pip install --upgrade pip
-pip install -r requirements.txt
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.lock
 pip install -r requirements-dev.txt
-pip install -e .
-```
+pip install --no-deps -e .
 
-### 2. 运行单元测试与安全性校验
-```powershell
+# 2. 安装前端依赖 (通过 Bun 锁文件锁定)
+bun install --frozen-lockfile
+
+# 3. 运行单元测试
 pytest -q
 ```
 
-### 3. 拉取验证组件并执行便携版打包
+### 2. 生产与正式发布构建 (Production / Release Build)
+为保证 100% 可复现性，CI 与 Release 构建严格执行无依赖重解析锁定构建：
 ```powershell
-# 自动拉取通过官方 SHA-256 校验的 OpenVPN 与 sing-box 二进制运行时
-python scripts/fetch_components.py --dest dist/OpenSight
+# 1. 严格按照锁文件安装依赖 (禁止次级解析)
+pip install --no-deps -r requirements.lock
+pip install -r requirements-dev.txt
+pip install --no-deps -e .
+bun install --frozen-lockfile
 
-# 构建免安装便携版并执行冒烟测试
+# 2. 安全与代码质量门禁
+flake8 src tests --config=.flake8
+pip-audit
+pytest --cov=opensight tests/
+
+# 3. 拉取官方固化二进制与生成 SBOM / 安全清单
+python scripts/fetch_components.py --dest dist/OpenSight
 python scripts/build_portable.py
 python scripts/smoke_test.py dist/OpenSight/OpenSight.exe
+python scripts/package_release.py --commit <GIT_COMMIT_SHA>
+
+# 4. 验证发布包清单与来源白名单
+python scripts/verify_manifest.py dist/staging
+python scripts/verify_provenance.py dist/staging
 ```
 
 ---

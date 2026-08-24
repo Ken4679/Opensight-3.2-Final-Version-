@@ -14,7 +14,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR / "src"))
 
 from opensight.core.constants import (
-    OPENVPN_MSI_NAME, OPENVPN_MSI_SHA256, OPENVPN_MSI_SIZE, OPENVPN_VERSION,
+    APP_VERSION, OPENVPN_MSI_NAME, OPENVPN_MSI_SHA256, OPENVPN_MSI_SIZE, OPENVPN_VERSION,
     SINGBOX_VERSION, SINGBOX_ZIP_SHA256
 )
 
@@ -53,7 +53,7 @@ def download(url: str, path: Path) -> str:
     domain = parsed.netloc.split(":")[0].lower()
     if parsed.scheme != "https" or domain not in ALLOWED_DOMAINS:
         raise RuntimeError(f"Disallowed URL: {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "OpenSight-Builder/3.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"OpenSight-Builder/{APP_VERSION}"})
     with urllib.request.urlopen(req, timeout=120) as resp:
         final = urllib.parse.urlparse(resp.geturl())
         final_domain = final.netloc.split(":")[0].lower()

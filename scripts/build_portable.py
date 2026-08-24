@@ -97,12 +97,13 @@ def build():
     subprocess.run(pyinstaller_cmd, check=True)
 
     print("=== [2/4] Building React Web Frontend to dist-web ===")
-    subprocess.run(["npm", "run", "build"], cwd=str(root / "web"), shell=True, check=True)
+    runner = "bun" if shutil.which("bun") else "npm"
+    subprocess.run([runner, "run", "build"], cwd=str(root), shell=True, check=True)
     if not dist_web.is_dir():
         raise RuntimeError(f"Frontend build directory not found: {dist_web}")
 
     print("=== [3/4] Building Tauri Native Shell ===")
-    subprocess.run(["npm", "run", "tauri", "build", "--", "--no-bundle"], cwd=str(root), shell=True, check=True)
+    subprocess.run([runner, "run", "tauri", "build", "--", "--no-bundle"], cwd=str(root), shell=True, check=True)
 
     print("=== [4/4] Finalizing Portable Bundle ===")
     tauri_exe = root / "src-tauri" / "target" / "release" / "OpenSight.exe"
