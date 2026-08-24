@@ -35,8 +35,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install --no-deps -r requirements.lock
           pip install -r requirements-dev.txt
+          pip install --upgrade --no-deps -r requirements.lock
           pip install --no-deps -e .
 
       # 6. 安装前端与 Tauri CLI 依赖 (通过 Bun 锁文件保证可复现)

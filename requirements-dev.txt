@@ -4,4 +4,4 @@ pytest-asyncio>=0.23.0
 flake8>=6.0.0
 pip-audit>=2.6.0
 pyinstaller>=6.0.0
-httpx>=0.28.1
+h11>=0.16.0

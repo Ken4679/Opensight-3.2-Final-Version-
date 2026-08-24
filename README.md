@@ -181,8 +181,8 @@ pytest -q
 为保证 100% 可复现性，CI 与 Release 构建严格执行无依赖重解析锁定构建：
 ```powershell
 # 1. 严格按照锁文件安装依赖 (禁止次级解析)
-pip install --no-deps -r requirements.lock
 pip install -r requirements-dev.txt
+pip install --upgrade --no-deps -r requirements.lock
 pip install --no-deps -e .
 bun install --frozen-lockfile
 
