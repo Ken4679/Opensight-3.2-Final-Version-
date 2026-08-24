@@ -24,8 +24,8 @@ def generate_cyclonedx_sbom(
         {
             "type": "framework",
             "name": "fastapi",
-            "version": "0.137.2",
-            "purl": "pkg:pypi/fastapi@0.137.2",
+            "version": "0.115.8",
+            "purl": "pkg:pypi/fastapi@0.115.8",
             "licenses": [{"license": {"id": "MIT"}}],
         },
         {
