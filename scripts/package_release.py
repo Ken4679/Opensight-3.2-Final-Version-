@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT_DIR / "src"))
 sys.path.insert(0, str(ROOT_DIR / "scripts"))
 from opensight.core.constants import APP_VERSION, OPENVPN_MSI_SHA256, OPENVPN_VERSION, SINGBOX_VERSION
 from opensight.packaging.manifest import ManifestGenerator
+from opensight.packaging.install_manifest import generate_install_manifest
 from opensight.packaging.provenance import ArtifactProvenance, VerificationStatus
 from generate_sbom import generate_cyclonedx_sbom
 
@@ -128,7 +129,8 @@ def package_release(output_dir: Path, commit_sha: str = "LOCAL_BUILD") -> Path:
     files_to_hash = [staging_dir / a.local_path for a in artifacts]
     gen.generate_sha256sums(files_to_hash)
 
-    # 生成 CycloneDX 规范 SBOM
+    # 生成安装归属权清单与 CycloneDX 规范 SBOM
+    generate_install_manifest(staging_dir)
     generate_cyclonedx_sbom(APP_VERSION, staging_dir / "SBOM.cdx.json")
 
     zip_path = output_dir / f"OpenSight-v{APP_VERSION}-win-x64-portable-full.zip"

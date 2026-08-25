@@ -406,19 +406,19 @@ export class ApiClient {
 
 
 
-  async uninstallSystem(): Promise<void> {
-
-    await fetch(this.url("/api/system/uninstall"), {
-
+  async uninstallSystem(purgeData: boolean = false): Promise<{ ok?: boolean; error?: string }> {
+    const res = await fetch(this.url("/api/system/uninstall"), {
       method: "POST",
-
       headers: this.headers,
-
+      body: JSON.stringify({ purge_data: purgeData }),
     });
-
+    return res.json();
   }
 
-
+  async getUninstallStatus(): Promise<{ state: string; message: string; percentage?: number; code?: string; details?: any }> {
+    const res = await fetch(this.url("/api/system/uninstall-status"), { headers: this.headers });
+    return res.json();
+  }
 
   async repairOpenVPN(): Promise<{ ok?: boolean; error?: string }> {
 

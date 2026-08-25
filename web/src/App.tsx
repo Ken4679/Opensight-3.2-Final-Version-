@@ -795,24 +795,67 @@ export default function App() {
 
               }}
 
-              onUninstallAll={async () => {
-
-                if (confirm("确定彻底清理网卡、清除防火墙并卸载 OpenSight 数据吗？\n（此操作将关闭软件并清理驱动）")) {
-
-                  setIsBusy(true);
-
-                  setBusyText("正在彻底清理驱动与便携数据...");
-
-                  await api?.uninstallSystem();
-
-                  setTimeout(() => {
-
-                    setIsBusy(false);
-
-                  }, 5000);
-
+              onUninstallAll={async (purgeData: boolean) => {
+                if (vpnStatus.isConnected || vpnStatus.isRoutingRunning) {
+                  toast.warning("正在断开连接", "正在自动断开 VPN 与分流...");
+                  try {
+                    if (vpnStatus.isRoutingRunning) await api?.stopRouting();
+                    await api?.disconnectVPN();
+                  } catch {}
                 }
 
+                setIsBusy(true);
+                setRepairProgress(10);
+                setBusyText(purgeData ? "正在准备彻底抹除并卸载 OpenSight..." : "正在准备卸载 OpenSight...");
+
+                const res = await api?.uninstallSystem(purgeData);
+                if (res?.error) {
+                  setIsBusy(false);
+                  toast.error("启动卸载失败", res.error);
+                  return;
+                }
+
+                let attempts = 0;
+                const pollTimer = setInterval(async () => {
+                  attempts++;
+                  try {
+                    const status = await api?.getUninstallStatus();
+                    if (status) {
+                      if (status.message) setBusyText(status.message);
+                      if (typeof status.percentage === "number") {
+                        setRepairProgress(status.percentage);
+                      }
+
+                      if (status.state === "completed") {
+                        clearInterval(pollTimer);
+                        setIsBusy(false);
+                        toast.success("卸载自检通过", status.message || "OpenSight 已完全清理且无任何系统残留。");
+                        setTimeout(() => {
+                          try {
+                            window.close();
+                          } catch {}
+                        }, 2000);
+                      } else if (status.state === "failed") {
+                        clearInterval(pollTimer);
+                        setIsBusy(false);
+                        toast.error("卸载未能完全完成", status.message || "请查看卸载日志以获取详细信息。");
+                      }
+                    }
+                  } catch {
+                    // 后台进程已退出或被终止，代表卸载流程已进入最后收尾
+                    if (attempts > 6) {
+                      clearInterval(pollTimer);
+                      setIsBusy(false);
+                      toast.info("卸载已完成", "OpenSight 核心服务已终止并完成清理。");
+                    }
+                  }
+
+                  if (attempts > 200) {
+                    clearInterval(pollTimer);
+                    setIsBusy(false);
+                    toast.warning("操作超时", "卸载轮询超时，请查看 %TEMP%\\OpenSight-Uninstall.log 日志。");
+                  }
+                }, 500);
               }}
 
             />

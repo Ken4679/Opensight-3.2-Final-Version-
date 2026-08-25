@@ -28,6 +28,8 @@ DEFAULT_SINGBOX_DIR: Final[str] = "singbox"
 
 SECURITY_MANIFEST_FILE: Final[str] = "SECURITY-MANIFEST.json"
 
+INSTALL_MANIFEST_FILE: Final[str] = "opensight-install-manifest.json"
+
 SHA256SUMS_FILE: Final[str] = "SHA256SUMS.txt"
 
 

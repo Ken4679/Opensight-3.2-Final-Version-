@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from typing import List, Optional
 
 # Starlette 1.x / FastAPI compatibility layer
@@ -63,6 +64,10 @@ from opensight.vpn.routing.app_selector import AppSelector
 
 from opensight.vpn.routing.singbox_backend import SingBoxRoutingBackend
 
+
+
+class UninstallRequest(BaseModel):
+    purge_data: bool = False
 
 
 class CredentialsPayload(BaseModel):
@@ -893,48 +898,82 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
 
 
     @app.post("/api/system/uninstall", dependencies=[Depends(verify_token)])
+    def run_full_uninstall(req: Optional[UninstallRequest] = None):
+        purge = bool(req.purge_data) if req else False
+        
+        # 1. 尝试停止当前分流与 VPN 连接
+        try:
+            if vpn_mgr.is_connected:
+                vpn_mgr.disconnect()
+        except Exception:
+            pass
+        try:
+            routing_backend.stop_routing()
+        except Exception:
+            pass
+        try:
+            vpn_mgr._leak_guard.remove_app_kill_switch([])
+        except Exception:
+            pass
 
-    def run_full_uninstall():
-
+        # 2. 定位卸载脚本
         helper = paths.base_dir / "uninstall_opensight_windows.ps1"
-
         if not helper.is_file():
+            alt_helper = paths.base_dir / "scripts" / "uninstall_opensight_windows.ps1"
+            if alt_helper.is_file():
+                helper = alt_helper
+            else:
+                return {"error": "未找到卸载辅助脚本 (uninstall_opensight_windows.ps1)"}
 
-            return {"error": "未找到卸载辅助脚本"}
+        status_file = paths.data_dir / "uninstall_status.json"
+        try:
+            status_file.parent.mkdir(parents=True, exist_ok=True)
+            status_payload = {
+                "state": "starting",
+                "message": "正在准备卸载 OpenSight...",
+                "percentage": 10,
+                "code": "STARTING",
+                "purge_data": purge,
+                "updated_at": int(time.time()),
+            }
+            status_file.write_text(json.dumps(status_payload, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+        cmd = [
+            "powershell.exe",
+            "-NoProfile",
+            "-WindowStyle",
+            "Hidden",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(helper),
+            "-BundleRoot",
+            str(paths.base_dir),
+            "-StatusFile",
+            str(status_file),
+        ]
+        if purge:
+            cmd.append("-PurgeData")
 
         subprocess.Popen(
-
-            [
-
-                "powershell.exe",
-
-                "-NoProfile",
-
-                "-WindowStyle",
-
-                "Hidden",
-
-                "-ExecutionPolicy",
-
-                "Bypass",
-
-                "-File",
-
-                str(helper),
-
-                "-BundleRoot",
-
-                str(paths.base_dir)
-
-            ],
-
+            cmd,
             cwd=str(paths.base_dir),
-
-            shell=False
-
+            shell=False,
         )
 
-        return {"ok": True}
+        return {"ok": True, "purge_data": purge}
+
+    @app.get("/api/system/uninstall-status", dependencies=[Depends(verify_token)])
+    def get_uninstall_status():
+        status_file = paths.data_dir / "uninstall_status.json"
+        if status_file.is_file():
+            try:
+                return json.loads(status_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {"state": "idle", "message": "就绪", "percentage": 0, "code": "OK"}
 
 
 
