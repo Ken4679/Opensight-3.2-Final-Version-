@@ -64,7 +64,24 @@ try {
         if (-not $bin) { throw "本地安装包中未找到 openvpn.exe" }
         New-Item -ItemType Directory -Path $OpenVpnDir -Force | Out-Null
         Get-ChildItem -LiteralPath $bin.Directory.FullName -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $OpenVpnDir $_.Name) -Force }
-        Write-Status "completed" "OpenVPN $Version 驱动与运行文件已就绪。" 100
+
+        # 记录安装归属权到 opensight-install-manifest.json
+        $manifestPath = Join-Path $BundleRoot "opensight-install-manifest.json"
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            try {
+                $m = Get-Content -LiteralPath $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+                if ($m.openvpn_driver_metadata) {
+                    $m.openvpn_driver_metadata.installed_by_opensight = $true
+                    $m.openvpn_driver_metadata.install_timestamp = [int][double]::Parse((Get-Date -UFormat %s))
+                    $m.openvpn_driver_metadata.install_path = $OpenVpnDir
+                    $m.openvpn_driver_metadata.version = $Version
+                    $m.openvpn_driver_metadata.expected_sha256 = $ExpectedHash
+                    $m | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding UTF8 -Force
+                }
+            } catch {}
+        }
+
+        Write-Status "completed" "OpenVPN $Version 驱动与运行文件已就绪。" 100 "OK"
     } finally { Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue }
 } catch { Write-Status "failed" $_.Exception.Message 0 "ERROR"; exit 1 }
 exit 0

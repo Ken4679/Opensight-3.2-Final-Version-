@@ -3,8 +3,10 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import List, Optional
 
 # Starlette 1.x / FastAPI compatibility layer
@@ -965,14 +967,29 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
 
         return {"ok": True, "purge_data": purge}
 
+    _last_uninstall_status: dict = {"state": "idle", "message": "就绪", "percentage": 0, "code": "OK"}
+
     @app.get("/api/system/uninstall-status", dependencies=[Depends(verify_token)])
     def get_uninstall_status():
+        nonlocal _last_uninstall_status
+        global_temp_status = Path(tempfile.gettempdir()) / "OpenSight-Uninstall-Status.json"
         status_file = paths.data_dir / "uninstall_status.json"
-        if status_file.is_file():
-            try:
-                return json.loads(status_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+
+        # 优先读取系统临时目录或数据目录中的最新状态
+        for f in (global_temp_status, status_file):
+            if f.is_file():
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and "state" in data:
+                        _last_uninstall_status = data
+                        return data
+                except Exception:
+                    pass
+
+        # 若文件已随目录清理但曾有进行中/终态状态，返回上次记录的状态，绝不回退到 idle
+        if _last_uninstall_status.get("state") not in ("idle", None):
+            return _last_uninstall_status
+
         return {"state": "idle", "message": "就绪", "percentage": 0, "code": "OK"}
 
 

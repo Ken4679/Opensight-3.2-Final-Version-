@@ -25,6 +25,9 @@ class OpenVpnDriverMetadata:
     expected_sha256: str = OPENVPN_MSI_SHA256
     file_size_bytes: int = OPENVPN_MSI_SIZE
     msi_product_code: Optional[str] = None
+    installed_by_opensight: bool = False
+    install_timestamp: Optional[int] = None
+    install_path: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -33,6 +36,9 @@ class OpenVpnDriverMetadata:
             "expected_sha256": self.expected_sha256,
             "file_size_bytes": self.file_size_bytes,
             "msi_product_code": self.msi_product_code,
+            "installed_by_opensight": self.installed_by_opensight,
+            "install_timestamp": self.install_timestamp,
+            "install_path": self.install_path,
         }
 
     @classmethod
@@ -43,6 +49,9 @@ class OpenVpnDriverMetadata:
             expected_sha256=data.get("expected_sha256", OPENVPN_MSI_SHA256),
             file_size_bytes=int(data.get("file_size_bytes", OPENVPN_MSI_SIZE)),
             msi_product_code=data.get("msi_product_code"),
+            installed_by_opensight=bool(data.get("installed_by_opensight", False)),
+            install_timestamp=data.get("install_timestamp"),
+            install_path=data.get("install_path"),
         )
 
 
@@ -197,6 +206,21 @@ class InstallManifest:
             adapter_name.lower() == a.lower()
             for a in self.owned_network_resources.adapters
         )
+
+    def is_owned_route(self, destination_prefix: str) -> bool:
+        norm = destination_prefix.strip().lower()
+        return any(
+            norm == r.strip().lower()
+            for r in self.owned_network_resources.route_destinations
+        )
+
+    def save(self, base_dir: Path) -> Path:
+        manifest_path = validate_subpath(base_dir, base_dir / INSTALL_MANIFEST_FILE)
+        manifest_path.write_text(
+            json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return manifest_path
 
 
 def generate_install_manifest(base_dir: Path) -> InstallManifest:

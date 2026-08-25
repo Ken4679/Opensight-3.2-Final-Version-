@@ -251,11 +251,14 @@ python scripts/verify_provenance.py dist/staging
 <details>
 <summary><b>Q7: 怎么完全卸载并清除所有数据？</b></summary>
 
-**A**: OpenSight 提供“正常卸载”与“彻底抹除 (Purge)”两种模式，均严格遵循归属权保护原则（绝不误删用户自带的其它 OpenVPN 或第三方软件）：
-- **GUI 一键操作**：在设置面板点击【彻底抹除并卸载】或【正常卸载】；
-- **脚本彻底卸载 (推荐)**：管理员运行 `powershell -ExecutionPolicy Bypass -File scripts\uninstall_opensight_windows.ps1 -PurgeData`；
-- **正常卸载 (保留配置)**：运行 `powershell -ExecutionPolicy Bypass -File scripts\uninstall_opensight_windows.ps1`；
-- **残留自检验证**：运行 `powershell -ExecutionPolicy Bypass -File scripts\uninstall_opensight_windows.ps1 -VerifyOnly`。
+**A**: OpenSight 采用**原生一键零残留 (Zero-Residual) 卸载系统**，严格遵循归属权安全原则（绝不误删用户自有的外部 OpenVPN、系统路由表或第三方软件）：
+1. 打开 OpenSight 界面右上角 **【设置】**；
+2. 点击 **【彻底抹除并卸载】**（抹除全部配置、缓存、日志与运行文件）或 **【正常卸载】**（保留个人节点配置）；
+3. 在弹出窗口中确认，系统将全自动完成虚拟网卡释放、防火墙与路由清理、凭据销毁与深度残留自检。
+
+> **💡 开发者与技术支持排查 (Diagnostics)**：
+> 支持通过命令行执行诊断自检（不改变系统状态）：
+> `powershell -ExecutionPolicy Bypass -File scripts\uninstall_opensight_windows.ps1 -VerifyOnly`
 </details>
 
 ---
