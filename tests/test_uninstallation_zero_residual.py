@@ -230,6 +230,21 @@ class TestUninstallationZeroResidual(unittest.TestCase):
             self.assertTrue(diag_log.exists(), "诊断日志允许并期望保留在临时目录")
             self.assertIn("CLEAN", diag_log.read_text(encoding="utf-8"))
 
+    def test_15_process_ownership_termination_and_pnp_finalizer_verification(self):
+        """测试可执行文件路径归属判定进程终止与 PnP/服务/计划任务 Finalizer 联动"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        # 验证进程停止遵循 BundleRoot 路径归属
+        self.assertIn("StartsWith($BundleRoot", content)
+        self.assertIn("SKIPPED_EXTERNAL_COMPONENT", content)
+
+        # 验证 Finalizer 中对 PnP、服务与计划任务的实装核验
+        self.assertIn("Get-PnpDevice", content)
+        self.assertIn("Get-Service", content)
+        self.assertIn("Get-ScheduledTask", content)
+        self.assertIn("`$details.clean = `$clean", content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -126,27 +126,33 @@ function Invoke-OpenSightResidualVerification(
         errors = @()
     }
 
-    # A. 检查残留进程 (Scoped by process name and bundle root for child helpers)
+    # A. 检查残留进程 (Scoped by process name and bundle root for ownership proof)
     try {
         $allProcs = Get-Process -ErrorAction SilentlyContinue
         foreach ($p in $allProcs) {
             $pName = $p.ProcessName.ToLowerInvariant()
-            if ($pName -in @("opensight", "opensight-core")) {
-                $report.processes += "PID $($p.Id): $($p.ProcessName)"
-                $report.clean = $false
-            } elseif ($pName -in @("sing-box", "openvpn")) {
+            if ($pName -in @("opensight", "opensight-core", "sing-box", "openvpn")) {
                 try {
                     $pPath = $p.Path
                     if ($pPath -and $TargetBundleRoot -and $pPath.StartsWith($TargetBundleRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
                         if ($pName -eq "sing-box") {
                             $report.singbox += "PID $($p.Id): $($p.ProcessName) ($pPath)"
-                        } else {
+                        } elseif ($pName -eq "openvpn") {
                             $report.openvpn += "PID $($p.Id): $($p.ProcessName) ($pPath)"
                         }
                         $report.processes += "PID $($p.Id): $($p.ProcessName) ($pPath)"
                         $report.clean = $false
+                    } elseif ($pName -in @("opensight", "opensight-core") -and -not $TargetBundleRoot) {
+                        # 若未指定 BundleRoot，但发现同名进程，按安全原则记录
+                        $report.processes += "PID $($p.Id): $($p.ProcessName)"
+                        $report.clean = $false
                     }
-                } catch {}
+                } catch {
+                    if ($pName -in @("opensight", "opensight-core") -and -not $TargetBundleRoot) {
+                        $report.processes += "PID $($p.Id): $($p.ProcessName)"
+                        $report.clean = $false
+                    }
+                }
             }
         }
     } catch {
@@ -388,21 +394,23 @@ if ($VerifyOnly) {
 try {
     Write-Status "starting" "正在准备卸载 OpenSight..." 15 "STARTING"
 
-    # Step A: 停止 OpenSight 相关进程 (严格归属校验，绝不误杀外部用户程序)
+    # Step A: 停止 OpenSight 相关进程 (严格基于可执行文件路径与 BundleRoot 归属校验，绝不误杀外部用户程序)
     Write-Status "stopping_processes" "正在安全终止 OpenSight 关联进程..." 25 "STOPPING_PROCESSES"
     Log-Message "正在终止 OpenSight 进程..."
     try {
-        Get-Process -Name "OpenSight", "opensight-core" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        
-        # 仅终止位于本便携包内的 sing-box 与 openvpn
-        $helperProcs = Get-Process -Name "sing-box", "openvpn" -ErrorAction SilentlyContinue
-        foreach ($hp in $helperProcs) {
+        $targetProcs = Get-Process -Name "OpenSight", "opensight-core", "sing-box", "openvpn" -ErrorAction SilentlyContinue
+        foreach ($p in $targetProcs) {
             try {
-                if ($hp.Path -and $hp.Path.StartsWith($BundleRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-                    Log-Message "终止便携包所属子进程: $($hp.ProcessName) (PID: $($hp.Id))"
-                    Stop-Process -Id $hp.Id -Force -ErrorAction SilentlyContinue
+                $pPath = $p.Path
+                if ($pPath -and $pPath.StartsWith($BundleRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    Log-Message "终止 OpenSight 所属进程: $($p.ProcessName) (PID: $($p.Id), Path: $pPath)"
+                    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+                } else {
+                    Log-Message "跳过非本便携包外部进程: $($p.ProcessName) (PID: $($p.Id), Path: $pPath) [SKIPPED_EXTERNAL_COMPONENT]"
                 }
-            } catch {}
+            } catch {
+                Log-Message "无法获取进程路径: $($p.ProcessName) (PID: $($p.Id))"
+            }
         }
         Start-Sleep -Milliseconds 500
     } catch {
@@ -631,12 +639,21 @@ try {
 `$ErrorActionPreference = 'SilentlyContinue'
 Start-Sleep -Seconds 2
 
-# 1. 终止残留后台进程并等待完全释放
+# 1. 终止残留后台进程并等待完全释放 (严格依据便携包路径归属)
 `$maxProcWait = 12
 while (`$maxProcWait -gt 0) {
-    `$procs = Get-Process -Name 'OpenSight', 'opensight-core' -ErrorAction SilentlyContinue
-    if (-not `$procs) { break }
+    `$procs = Get-Process -Name 'OpenSight', 'opensight-core', 'sing-box', 'openvpn' -ErrorAction SilentlyContinue
+    `$ownedProcs = @()
     foreach (`$p in `$procs) {
+        try {
+            `$pPath = `$p.Path
+            if (`$pPath -and `$pPath.StartsWith('$escapedBundleRoot', [System.StringComparison]::OrdinalIgnoreCase)) {
+                `$ownedProcs += `$p
+            }
+        } catch {}
+    }
+    if (`$ownedProcs.Count -eq 0) { break }
+    foreach (`$p in `$ownedProcs) {
         Stop-Process -Id `$p.Id -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
