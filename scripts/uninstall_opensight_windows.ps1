@@ -363,11 +363,18 @@ try {
         Write-Status "failed" "卸载已执行，但部分非关键项未能自动移除。" 0 "PARTIAL_RESIDUALS" @{ check_result = $verifyResult }
     }
 
-    # Step H: 调度便携目录自清理（若 PurgeData 且主进程退出后）
-    if ($PurgeData) {
-        $escapedBundleRoot = $BundleRoot.Replace("'", "''")
-        $selfDeleteScript = @"
+    # Step H: 调度便携目录自清理与临时卸载日志清理（主进程退出后延迟安全删除）
+    $escapedBundleRoot = $BundleRoot.Replace("'", "''")
+    $escapedLogPath = $logPath.Replace("'", "''")
+    $selfDeleteScript = @"
 Start-Sleep -Seconds 3
+if (Test-Path -LiteralPath '$escapedLogPath') {
+    Remove-Item -LiteralPath '$escapedLogPath' -Force -ErrorAction SilentlyContinue
+}
+"@
+    if ($PurgeData) {
+        $selfDeleteScript += @"
+
 for (`$i = 0; `$i -lt 5; `$i++) {
     try {
         if (Test-Path -LiteralPath '$escapedBundleRoot') {
@@ -379,11 +386,11 @@ for (`$i = 0; `$i -lt 5; `$i++) {
     }
 }
 "@
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($selfDeleteScript))
-        Start-Process -FilePath "powershell.exe" -ArgumentList @(
-            "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
-        ) -ErrorAction SilentlyContinue | Out-Null
     }
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($selfDeleteScript))
+    Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
+    ) -ErrorAction SilentlyContinue | Out-Null
 
     exit 0
 } catch {
