@@ -218,6 +218,7 @@ class TestUninstallationZeroResidual(unittest.TestCase):
 
             # 模拟创建安装清单与临时诊断日志
             manifest = generate_install_manifest(bundle_path)
+            self.assertIsNotNone(manifest)
             diag_log = tmp_path / "OpenSight-Uninstall.log"
             diag_log.write_text("[2026-08-25 10:00:00] Uninstall started\n[2026-08-25 10:00:05] CLEAN\n", encoding="utf-8")
 
