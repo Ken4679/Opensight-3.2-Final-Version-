@@ -18,6 +18,7 @@ class TestUninstallationZeroResidual(unittest.TestCase):
             tmp_path = Path(tmp_dir)
             manifest = generate_install_manifest(tmp_path)
             self.assertTrue((tmp_path / INSTALL_MANIFEST_FILE).is_file())
+            self.assertEqual(manifest.application_name, APP_NAME)
 
             loaded = load_install_manifest(tmp_path / INSTALL_MANIFEST_FILE)
             self.assertEqual(loaded.application_name, APP_NAME)
