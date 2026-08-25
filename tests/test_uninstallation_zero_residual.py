@@ -245,6 +245,17 @@ class TestUninstallationZeroResidual(unittest.TestCase):
         self.assertIn("Get-ScheduledTask", content)
         self.assertIn("`$details.clean = `$clean", content)
 
+    def test_16_route_precision_ownership_removal(self):
+        """测试路由清理基于 tracked_routes 归属元数据精确匹配 (DestinationPrefix, InterfaceIndex, NextHop, Metric)"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("tracked_routes", content)
+        self.assertIn("InterfaceIndex", content)
+        self.assertIn("NextHop", content)
+        self.assertIn("RouteMetric", content)
+        self.assertNotIn("route -f", content)
+
 
 if __name__ == "__main__":
     unittest.main()

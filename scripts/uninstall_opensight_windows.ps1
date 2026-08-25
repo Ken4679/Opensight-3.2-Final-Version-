@@ -417,34 +417,48 @@ try {
         Log-Message "进程清理警告: $_"
     }
 
-    # Step B: 清理 OpenSight 专属路由 (严格基于归属清单与网卡，禁止任何全局重置)
+    # Step B: 精确清理 OpenSight 专属路由 (依据归属元数据精确匹配 DestinationPrefix, InterfaceIndex, NextHop, RouteMetric，禁止任何全局重置)
     Write-Status "cleaning_routes" "正在清理 OpenSight 分流路由表项..." 35 "CLEANING_ROUTES"
-    Log-Message "正在清理 OpenSight 专属路由..."
+    Log-Message "正在清理 OpenSight 专属路由 (精确归属匹配)..."
     try {
-        $ownedPrefixes = @("172.19.0.0/30", "fdfe:dcba:9876::/126")
-        if ($installManifest -and $installManifest.owned_network_resources) {
-            if ($installManifest.owned_network_resources.route_destinations) {
-                $ownedPrefixes = $installManifest.owned_network_resources.route_destinations
-            }
-            if ($installManifest.owned_network_resources.tracked_routes) {
-                foreach ($tr in $installManifest.owned_network_resources.tracked_routes) {
-                    if ($tr.destination_prefix -and $ownedPrefixes -notcontains $tr.destination_prefix) {
-                        $ownedPrefixes += $tr.destination_prefix
+        # 1. 优先按安装清单中登记的 tracked_routes 精确匹配清理
+        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.tracked_routes) {
+            foreach ($tr in $installManifest.owned_network_resources.tracked_routes) {
+                if ($tr.destination_prefix) {
+                    $matchingRoutes = @(Get-NetRoute -DestinationPrefix $tr.destination_prefix -ErrorAction SilentlyContinue)
+                    foreach ($rt in $matchingRoutes) {
+                        # 精确匹配 interface_index, gateway / NextHop, metric
+                        $match = $true
+                        if ($tr.interface_index -and $rt.InterfaceIndex -ne $tr.interface_index) { $match = $false }
+                        if ($tr.gateway -and $rt.NextHop -ne $tr.gateway) { $match = $false }
+                        if ($tr.metric -and $rt.RouteMetric -ne $tr.metric) { $match = $false }
+                        if ($match) {
+                            Log-Message "精确移除 OpenSight 记录路由: $($rt.DestinationPrefix) (ifIndex: $($rt.InterfaceIndex), NextHop: $($rt.NextHop), Metric: $($rt.RouteMetric))"
+                            Remove-NetRoute -DestinationPrefix $rt.DestinationPrefix -InterfaceIndex $rt.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+                        }
                     }
                 }
             }
         }
+
+        # 2. 清理 OpenSight-TUN 虚拟网卡接口上的专属关联路由
+        $tunRoutes = @(Get-NetRoute -InterfaceAlias "OpenSight-TUN" -ErrorAction SilentlyContinue)
+        foreach ($rt in $tunRoutes) {
+            Log-Message "移除网卡关联路由: $($rt.DestinationPrefix) (ifIndex: $($rt.InterfaceIndex))"
+            Remove-NetRoute -DestinationPrefix $rt.DestinationPrefix -InterfaceIndex $rt.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+        }
+
+        # 3. 严格限定已知 OpenSight 专属保留分流网段 (172.19.0.0/30, fdfe:dcba:9876::/126)
+        $ownedPrefixes = @("172.19.0.0/30", "fdfe:dcba:9876::/126")
+        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.route_destinations) {
+            $ownedPrefixes = $installManifest.owned_network_resources.route_destinations
+        }
         foreach ($pfx in $ownedPrefixes) {
             $routes = @(Get-NetRoute -DestinationPrefix $pfx -ErrorAction SilentlyContinue)
             foreach ($rt in $routes) {
-                Log-Message "移除专属路由: $($rt.DestinationPrefix)"
+                Log-Message "移除专属保留路由: $($rt.DestinationPrefix) (ifIndex: $($rt.InterfaceIndex))"
                 Remove-NetRoute -DestinationPrefix $rt.DestinationPrefix -InterfaceIndex $rt.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
             }
-        }
-        $tunRoutes = @(Get-NetRoute -InterfaceAlias "OpenSight-TUN" -ErrorAction SilentlyContinue)
-        foreach ($rt in $tunRoutes) {
-            Log-Message "移除网卡关联路由: $($rt.DestinationPrefix)"
-            Remove-NetRoute -DestinationPrefix $rt.DestinationPrefix -InterfaceIndex $rt.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
         }
     } catch {
         Log-Message "路由清理异常: $_"
@@ -715,20 +729,17 @@ foreach (`$ed in `$extractDirs) {
     errors = @()
 }
 
-# 进程检查
+# 进程检查 (严格基于 BundleRoot 可执行文件路径归属)
 `$allProcs = Get-Process -ErrorAction SilentlyContinue
 foreach (`$p in `$allProcs) {
     `$pName = `$p.ProcessName.ToLowerInvariant()
-    if (`$pName -in @('opensight', 'opensight-core')) {
-        `$details.processes += "PID `$(`$p.Id): `$(`$p.ProcessName)"
-        `$clean = `$false
-    } elseif (`$pName -in @('sing-box', 'openvpn')) {
+    if (`$pName -in @('opensight', 'opensight-core', 'sing-box', 'openvpn')) {
         try {
             `$pPath = `$p.Path
             if (`$pPath -and `$pPath.StartsWith('$escapedBundleRoot', [System.StringComparison]::OrdinalIgnoreCase)) {
-                if (`$pName -eq 'sing-box') { `$details.singbox += "PID `$(`$p.Id): `$(`$p.ProcessName)" }
-                else { `$details.openvpn += "PID `$(`$p.Id): `$(`$p.ProcessName)" }
-                `$details.processes += "PID `$(`$p.Id): `$(`$p.ProcessName)"
+                if (`$pName -eq 'sing-box') { `$details.singbox += "PID `$(`$p.Id): `$(`$p.ProcessName) (`$pPath)" }
+                elseif (`$pName -eq 'openvpn') { `$details.openvpn += "PID `$(`$p.Id): `$(`$p.ProcessName) (`$pPath)" }
+                `$details.processes += "PID `$(`$p.Id): `$(`$p.ProcessName) (`$pPath)"
                 `$clean = `$false
             }
         } catch {}
