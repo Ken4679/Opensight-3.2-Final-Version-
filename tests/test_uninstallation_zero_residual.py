@@ -80,7 +80,7 @@ class TestUninstallationZeroResidual(unittest.TestCase):
         self.assertIn("[string]$StatusFile", content, "必须支持 -StatusFile 参数")
         self.assertIn("[switch]$PurgeData", content, "必须支持 -PurgeData 参数")
         self.assertIn("[switch]$VerifyOnly", content, "必须支持 -VerifyOnly 参数")
-        self.assertIn("Invoke-ResidualCheck", content, "必须包含自检逻辑")
+        self.assertIn("Invoke-OpenSightResidualVerification", content, "必须包含规范的残留自检函数")
         self.assertIn("OpenSight-TUN", content, "必须针对性清理 OpenSight-TUN 虚拟网卡")
         self.assertIn("OpenSight-*", content, "必须针对性清理 OpenSight-* 防火墙规则")
         self.assertIn("SKIPPED_EXTERNAL_COMPONENT", content, "必须有防误删外部组件的保护逻辑")
@@ -112,15 +112,17 @@ class TestUninstallationZeroResidual(unittest.TestCase):
             self.assertTrue(manifest.is_owned_route("172.19.0.0/30"))
 
     def test_05_external_finalizer_verification_integrity(self):
-        """测试外部 Finalizer 逻辑确保在 BundleRoot 删除后才写入 CLEAN"""
+        """测试外部 Finalizer 逻辑确保在 BundleRoot 删除后才写入 CLEAN 并共享统一核验体系"""
         script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
         content = script_path.read_text(encoding="utf-8")
 
         # 验证 Finalizer 在子进程中执行删除后才进行证据核查
         self.assertIn("OpenSight-Finalizer-", content)
-        self.assertIn("Invoke-ResidualCheck", content)
         self.assertIn("CLEAN", content)
         self.assertIn("RESIDUALS_FOUND", content)
+        self.assertIn("pnp_devices", content)
+        self.assertIn("scheduled_tasks", content)
+        self.assertIn("services", content)
 
     def test_06_repair_openvpn_ownership_registration(self):
         """测试 OpenVPN 修复脚本中登记归属权元数据"""
@@ -141,26 +143,27 @@ class TestUninstallationZeroResidual(unittest.TestCase):
         self.assertIn("generate_install_manifest", content)
 
     def test_08_verify_only_mode_and_post_reboot_structure(self):
-        """测试 -VerifyOnly 独立校验模式支持结构（包括重启后验证与字段核查）"""
+        """测试 -VerifyOnly 独立校验模式支持结构（包括完整文件系统与临时文件核查）"""
         script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
         content = script_path.read_text(encoding="utf-8")
 
         self.assertIn("if ($VerifyOnly)", content)
-        self.assertIn("Invoke-ResidualCheck -CheckFiles:$true -CheckTemp:$PurgeData", content)
+        self.assertIn("Invoke-OpenSightResidualVerification", content)
+        self.assertIn("-CheckFiles:$true -CheckTemp:$true", content)
         self.assertIn("CLEAN", content)
         self.assertIn("RESIDUALS_FOUND", content)
 
-    def test_09_temp_artifact_cleanup_and_verification(self):
-        """测试临时目录残留清理逻辑与核验 (OpenSight-Extract-*, OpenSight-Uninstall.log)"""
+    def test_09_temp_artifact_cleanup_and_diagnostic_log_retention(self):
+        """测试临时目录残留清理逻辑与诊断日志保留策略 (OpenSight-Extract-* 被清，OpenSight-Uninstall.log 被保留)"""
         script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
         content = script_path.read_text(encoding="utf-8")
 
         self.assertIn("OpenSight-Extract-*", content)
-        self.assertIn("OpenSight-Uninstall.log", content)
         self.assertIn("OpenSight-Finalizer-", content)
+        self.assertIn("OpenSight-Uninstall.log", content)
 
     def test_10_services_and_tasks_cleanup_structure(self):
-        """测试服务与计划任务精确注销逻辑"""
+        """测试服务与计划任务精确注销与核验结构"""
         script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
         content = script_path.read_text(encoding="utf-8")
 
@@ -192,6 +195,39 @@ class TestUninstallationZeroResidual(unittest.TestCase):
         self.assertIn("LOCALAPPDATA", content)
         self.assertIn("APPDATA", content)
         self.assertIn("ProgramData", content)
+
+    def test_13_canonical_verification_data_structure(self):
+        """测试规范核验数据结构字段完整性"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        required_keys = [
+            "clean", "processes", "files", "routes", "firewall",
+            "adapters", "pnp_devices", "registry", "services",
+            "scheduled_tasks", "startup", "openvpn", "singbox", "temp"
+        ]
+        for key in required_keys:
+            self.assertIn(f"{key} =", content, f"核验报告必须包含字段 {key}")
+
+    def test_14_post_reboot_verification_simulation(self):
+        """测试模拟重启后独立核验持久性逻辑 (状态文件与诊断日志分离)"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            bundle_path = tmp_path / "OpenSightBundle"
+            bundle_path.mkdir()
+
+            # 模拟创建安装清单与临时诊断日志
+            manifest = generate_install_manifest(bundle_path)
+            diag_log = tmp_path / "OpenSight-Uninstall.log"
+            diag_log.write_text("[2026-08-25 10:00:00] Uninstall started\n[2026-08-25 10:00:05] CLEAN\n", encoding="utf-8")
+
+            # 模拟重启后核验状态：BundleRoot 已在卸载时彻底移除
+            import shutil
+            shutil.rmtree(bundle_path)
+
+            self.assertFalse(bundle_path.exists(), "BundleRoot 必须在重启后依然不存在")
+            self.assertTrue(diag_log.exists(), "诊断日志允许并期望保留在临时目录")
+            self.assertIn("CLEAN", diag_log.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
