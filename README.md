@@ -141,14 +141,34 @@ OpenSight 支持 **3 种便捷导入方式**，点击主界面左上角 **【+ �
 
 ## 🧹 卸载与系统清理 (Uninstallation & Cleanup)
 
-OpenSight 为纯绿色免安装软件。如果未来不需要使用，清理非常简单：
+OpenSight 为纯绿色免安装软件，提供内置的**图形界面全自动卸载流程**：
 
-1. **常规退出**：在软件界面点击【断开连接】并关闭软件，所有虚拟网卡和后台进程会自动安全退出；
-2. **深度一键清理**：如果需要抹除所有本地缓存数据与防火墙规则，右键以管理员身份运行项目目录下的：
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts/uninstall_opensight_windows.ps1 -PurgeData
-   ```
-   脚本会自动终止所有相关进程、清除 OpenSight 防火墙规则、注销虚拟网卡并清空 `%LOCALAPPDATA%\OpenSight` 数据，完成系统清理。
+### 1. 普通用户的标准卸载方式 (Primary GUI Workflow)
+普通用户**无需手动运行任何 PowerShell 脚本或手动删除文件**：
+1. 打开 OpenSight 界面右上角 **【设置】**；
+2. 选择 **【卸载 OpenSight】**；
+3. 选择卸载模式并点击确认：
+   * **正常卸载 (Normal Uninstall)**：安全退出并清除 OpenSight 程序运行组件与所属网络/系统状态，保留您的用户配置与节点数据；
+   * **彻底抹除 (Full Purge)**：完整移除 OpenSight 所有的程序文件、用户数据、节点配置、DPAPI 加密凭据、运行日志、缓存数据、元数据清单，以及 OpenSight 专属的临时路由、`OpenSight-*` 防火墙规则、`OpenSight-TUN` 虚拟网卡、OpenSight 拥有的 OpenVPN 与 sing-box 组件；
+4. 系统将全自动完成所有资源释放与外部终态验证，确认完毕后软件自动关闭退出。
+
+### 2. 归属权安全边界与网络状态保护 (Ownership-Aware Cleanup)
+OpenSight 严格实施基于**安装归属权清单**的精准清理：
+* **仅清理自身资源**：仅移除 OpenSight 创建的专属路由表项（如 `172.19.0.0/30`、`OpenSight-TUN` 绑定路由）、`OpenSight-*` 防火墙规则与专属虚拟网卡，**严禁且绝不使用 `route -f` 全局重置路由表**；
+* **保护第三方与用户资产**：OpenSight 不会移除任何与本项目无关的用户自有 VPN 网卡、第三方路由、用户自定义防火墙规则，或用户单独安装的外部 OpenVPN 客户端；
+* **OpenVPN 专属归属判断**：仅在安装清单明确记录为 OpenSight 专属安装的 OpenVPN 组件时才会调用卸载；如检测为外部或用户已有安装，将自动予以保留（`SKIPPED_EXTERNAL_COMPONENT`）。
+
+### 3. 卸载诊断日志说明 (Uninstall Diagnostic Log)
+卸载完成后，Windows 临时目录中会专门保留一份诊断日志：`%TEMP%\OpenSight-Uninstall.log`。
+* **保留目的**：供用户在遇到系统清理异常时审查卸载结果与排查故障；
+* **属性说明**：该文件属于外部诊断记录，不属于已安装应用程序的一部分，也不影响系统正常运行。排查完毕后用户可随时安全手动删除；
+* **安全隐私**：卸载诊断日志在设计上严格排除了用户密码、VPN 凭据、私钥、身份令牌等任何敏感机密信息。
+
+> **💡 开发者与技术支持排查 (Advanced Diagnostic Mechanism)**：
+> 高级开发者或技术支持人员如需在不改动系统状态的前提下独立核验残留状态，可在终端运行：
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File scripts\uninstall_opensight_windows.ps1 -VerifyOnly -PurgeData
+> ```
 
 ---
 
@@ -251,14 +271,13 @@ python scripts/verify_provenance.py dist/staging
 <details>
 <summary><b>Q7: 怎么完全卸载并清除所有数据？</b></summary>
 
-**A**: OpenSight 采用**原生一键零残留 (Zero-Residual) 卸载系统**，严格遵循归属权安全原则（绝不误删用户自有的外部 OpenVPN、系统路由表或第三方软件）：
+**A**: OpenSight 提供内置的**图形界面全自动卸载流程**：
 1. 打开 OpenSight 界面右上角 **【设置】**；
-2. 点击 **【彻底抹除并卸载】**（抹除全部配置、缓存、日志与运行文件）或 **【正常卸载】**（保留个人节点配置）；
-3. 在弹出窗口中确认，系统将全自动完成虚拟网卡释放、防火墙与路由清理、凭据销毁与深度残留自检。
+2. 选择 **【卸载 OpenSight】**；
+3. 选择 **【彻底抹除】**（Full Purge，移除所有 OpenSight 运行文件、用户数据、DPAPI 凭据、日志与专属网络/防火墙规则）或 **【正常卸载】**（保留个人节点配置）；
+4. 确认后系统全自动执行清理与终态验证，随后自动退出。
 
-> **💡 开发者与技术支持排查 (Diagnostics)**：
-> 支持通过命令行执行诊断自检（不改变系统状态）：
-> `powershell -ExecutionPolicy Bypass -File scripts\uninstall_opensight_windows.ps1 -VerifyOnly`
+卸载诊断日志 `%TEMP%\OpenSight-Uninstall.log` 会单独保留在 Windows 临时目录供排障审阅，排查后可随时手动删除。外部/用户已有的 OpenVPN 或网络适配器会自动予以安全保留。
 </details>
 
 ---
