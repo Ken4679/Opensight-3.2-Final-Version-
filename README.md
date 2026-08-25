@@ -277,7 +277,7 @@ python scripts/verify_provenance.py dist/staging
 3. 选择 **【彻底抹除】**（Full Purge，移除所有 OpenSight 运行文件、用户数据、DPAPI 凭据、日志与专属网络/防火墙规则）或 **【正常卸载】**（保留个人节点配置）；
 4. 确认后系统全自动执行清理与终态验证，随后自动退出。
 
-卸载诊断日志 `%TEMP%\OpenSight-Uninstall.log` 会单独保留在 Windows 临时目录供排障审阅，排查后可随时手动删除。外部/用户已有的 OpenVPN 或网络适配器会自动予以安全保留。
+卸载诊断日志 `%TEMP%\OpenSight-Uninstall.log` 会单独保留在 Windows 临时目录供排障审阅，排查后可随时手动删除。外部/用户已有的 OpenVPN 或网络适配器会自动予以安全保留。CodeRabbit audit
 </details>
 
 ---
