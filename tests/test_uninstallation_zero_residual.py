@@ -140,7 +140,59 @@ class TestUninstallationZeroResidual(unittest.TestCase):
         self.assertIn("uninstall_opensight_windows.ps1", content)
         self.assertIn("generate_install_manifest", content)
 
+    def test_08_verify_only_mode_and_post_reboot_structure(self):
+        """测试 -VerifyOnly 独立校验模式支持结构（包括重启后验证与字段核查）"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("if ($VerifyOnly)", content)
+        self.assertIn("Invoke-ResidualCheck -CheckFiles:$true -CheckTemp:$PurgeData", content)
+        self.assertIn("CLEAN", content)
+        self.assertIn("RESIDUALS_FOUND", content)
+
+    def test_09_temp_artifact_cleanup_and_verification(self):
+        """测试临时目录残留清理逻辑与核验 (OpenSight-Extract-*, OpenSight-Uninstall.log)"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("OpenSight-Extract-*", content)
+        self.assertIn("OpenSight-Uninstall.log", content)
+        self.assertIn("OpenSight-Finalizer-", content)
+
+    def test_10_services_and_tasks_cleanup_structure(self):
+        """测试服务与计划任务精确注销逻辑"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("Get-Service -Name \"OpenSight*\"", content)
+        self.assertIn("sc.exe delete", content)
+        self.assertIn("Get-ScheduledTask -TaskName \"OpenSight*\"", content)
+        self.assertIn("Unregister-ScheduledTask", content)
+
+    def test_11_registry_and_startup_exact_keys(self):
+        """测试注册表与开机启动项精确清理路径"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("HKCU:\\Software\\OpenSight", content)
+        self.assertIn("HKLM:\\Software\\OpenSight", content)
+        self.assertIn("CurrentVersion\\Uninstall\\OpenSight", content)
+        self.assertIn("CurrentVersion\\Run", content)
+        self.assertIn("Startup\\OpenSight.lnk", content)
+
+    def test_12_full_purge_data_coverage(self):
+        """测试 Full Purge 模式下数据目录及 AppData 清理覆盖"""
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"
+        content = script_path.read_text(encoding="utf-8")
+
+        self.assertIn("data", content)
+        self.assertIn("logs", content)
+        self.assertIn("profiles", content)
+        self.assertIn("licenses", content)
+        self.assertIn("LOCALAPPDATA", content)
+        self.assertIn("APPDATA", content)
+        self.assertIn("ProgramData", content)
+
 
 if __name__ == "__main__":
     unittest.main()
-

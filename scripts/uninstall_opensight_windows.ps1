@@ -23,7 +23,9 @@ if ([string]::IsNullOrWhiteSpace($StatusFile)) {
 
 function Log-Message([string]$Message) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "[$timestamp] $Message" | Out-File -FilePath $logPath -Append -Encoding utf8
+    try {
+        "[$timestamp] $Message" | Out-File -FilePath $logPath -Append -Encoding utf8
+    } catch {}
 }
 
 function Write-Status([string]$State, [string]$Message, [int]$Percentage = 0, [string]$Code = "OK", [hashtable]$Details = $null) {
@@ -96,7 +98,7 @@ if (Test-Path -LiteralPath $ManifestFile -PathType Leaf) {
 }
 
 # 3. 辅助函数：执行系统状态残留自检 (Evidence-based Verification)
-function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
+function Invoke-ResidualCheck([switch]$CheckFiles = $false, [switch]$CheckTemp = $false) {
     $report = @{
         clean = $true
         processes = @()
@@ -109,7 +111,9 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
         tasks = @()
         startup = @()
         files = @()
+        temp = @()
         openvpn = @()
+        singbox = @()
         errors = @()
     }
 
@@ -125,6 +129,11 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
                 try {
                     $pPath = $p.Path
                     if ($pPath -and $pPath.StartsWith($BundleRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        if ($pName -eq "sing-box") {
+                            $report.singbox += "PID $($p.Id): $($p.ProcessName) ($pPath)"
+                        } else {
+                            $report.openvpn += "PID $($p.Id): $($p.ProcessName) ($pPath)"
+                        }
                         $report.processes += "PID $($p.Id): $($p.ProcessName) ($pPath)"
                         $report.clean = $false
                     }
@@ -227,13 +236,31 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
 
     # F. 检查注册表残留
     try {
-        if (Test-Path "HKCU:\Software\OpenSight") {
-            $report.registry += "HKCU:\Software\OpenSight"
-            $report.clean = $false
+        $regKeysToCheck = @(
+            "HKCU:\Software\OpenSight",
+            "HKLM:\Software\OpenSight",
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
+        )
+        foreach ($rk in $regKeysToCheck) {
+            if (Test-Path $rk) {
+                $report.registry += $rk
+                $report.clean = $false
+            }
         }
-        if (Test-Path "HKLM:\Software\OpenSight") {
-            $report.registry += "HKLM:\Software\OpenSight"
-            $report.clean = $false
+        # 检查 Run 启动项
+        $runKeys = @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+        )
+        foreach ($runKey in $runKeys) {
+            if (Test-Path $runKey) {
+                $prop = Get-ItemProperty -Path $runKey -Name "OpenSight" -ErrorAction SilentlyContinue
+                if ($prop -and $prop.OpenSight) {
+                    $report.registry += "$runKey\OpenSight"
+                    $report.clean = $false
+                }
+            }
         }
     } catch {
         $report.errors += "注册表自检异常: $_"
@@ -274,7 +301,7 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
                     $report.files += "BundleRoot: $BundleRoot"
                     $report.clean = $false
                 }
-                foreach ($envDir in @($env:LOCALAPPDATA, $env:APPDATA)) {
+                foreach ($envDir in @($env:LOCALAPPDATA, $env:APPDATA, $env:ProgramData)) {
                     if ($envDir) {
                         $appDataTarget = Join-Path $envDir "OpenSight"
                         if (Test-Path -LiteralPath $appDataTarget) {
@@ -299,13 +326,32 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
         }
     }
 
+    # J. 临时文件残留自检
+    if ($CheckTemp) {
+        try {
+            $tempDir = [System.IO.Path]::GetTempPath()
+            $tempExtracts = @(Get-ChildItem -LiteralPath $tempDir -Filter "OpenSight-Extract-*" -Directory -ErrorAction SilentlyContinue)
+            foreach ($te in $tempExtracts) {
+                $report.temp += $te.FullName
+                $report.clean = $false
+            }
+            $tempLogs = @(Get-ChildItem -LiteralPath $tempDir -Filter "OpenSight-Uninstall.log" -File -ErrorAction SilentlyContinue)
+            foreach ($tl in $tempLogs) {
+                $report.temp += $tl.FullName
+                $report.clean = $false
+            }
+        } catch {
+            $report.errors += "临时文件自检异常: $_"
+        }
+    }
+
     return $report
 }
 
-# 4. 如果是仅验证模式 (-VerifyOnly)，直接运行自检并返回
+# 4. 如果是仅验证模式 (-VerifyOnly)，直接运行自检并返回（支持重启后独立核验）
 if ($VerifyOnly) {
     Write-Status "verifying" "正在执行系统残留深度自检..." 50 "VERIFYING"
-    $check = Invoke-ResidualCheck -CheckFiles:$false
+    $check = Invoke-ResidualCheck -CheckFiles:$true -CheckTemp:$PurgeData
     if ($check.clean) {
         Log-Message "[PASS] 自检完成：未发现任何 OpenSight 残留组件 (CLEAN)"
         Write-Status "completed" "自检通过：系统未发现任何 OpenSight 残留组件 (CLEAN)" 100 "CLEAN" @{ check_result = $check }
@@ -470,28 +516,58 @@ try {
         Log-Message "未发现 OpenSight 专属 OpenVPN 驱动安装归属证明，保留外部/系统现有组件 (SKIPPED_EXTERNAL_COMPONENT)。"
     }
 
-    # Step F: 清理注册表与启动项
-    Write-Status "cleaning_registry" "正在清理注册表配置与启动项..." 80 "CLEANING_REGISTRY"
+    # Step F: 清理注册表、服务、计划任务与启动项
+    Write-Status "cleaning_registry" "正在清理注册表配置、服务与计划任务..." 80 "CLEANING_REGISTRY"
     try {
-        if (Test-Path "HKCU:\Software\OpenSight") {
-            Remove-Item -Path "HKCU:\Software\OpenSight" -Recurse -Force -ErrorAction SilentlyContinue
+        # 清理注册表项
+        $regKeysToRemove = @(
+            "HKCU:\Software\OpenSight",
+            "HKLM:\Software\OpenSight",
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
+        )
+        foreach ($rk in $regKeysToRemove) {
+            if (Test-Path $rk) {
+                Remove-Item -Path $rk -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
-        if (Test-Path "HKLM:\Software\OpenSight") {
-            Remove-Item -Path "HKLM:\Software\OpenSight" -Recurse -Force -ErrorAction SilentlyContinue
+        $runKeys = @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+        )
+        foreach ($runKey in $runKeys) {
+            if (Test-Path $runKey) {
+                Remove-ItemProperty -Path $runKey -Name "OpenSight" -Force -ErrorAction SilentlyContinue
+            }
         }
+
+        # 清理服务
+        $svcs = @(Get-Service -Name "OpenSight*" -ErrorAction SilentlyContinue)
+        foreach ($s in $svcs) {
+            Stop-Service -Name $s.Name -Force -ErrorAction SilentlyContinue
+            & sc.exe delete "$($s.Name)" | Out-Null
+        }
+
+        # 清理计划任务
+        $tasks = @(Get-ScheduledTask -TaskName "OpenSight*" -ErrorAction SilentlyContinue)
+        foreach ($t in $tasks) {
+            Unregister-ScheduledTask -TaskName $t.TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+
+        # 清理启动项快捷方式
         $startupFile = Join-Path ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Startup)) "OpenSight.lnk"
         if (Test-Path -LiteralPath $startupFile) {
             Remove-Item -LiteralPath $startupFile -Force -ErrorAction SilentlyContinue
         }
     } catch {
-        Log-Message "注册表/启动项清理警告: $_"
+        Log-Message "注册表/服务/计划任务清理警告: $_"
     }
 
     # Step G: 数据目录预清理 (若指定 -PurgeData)
     if ($PurgeData) {
         Write-Status "purging_data" "正在抹除用户数据、凭据与配置..." 88 "PURGING_DATA"
-        Log-Message "正在彻底抹除数据目录 (data, logs, profiles)..."
-        foreach ($sub in @("data", "logs", "profiles")) {
+        Log-Message "正在彻底抹除数据目录 (data, logs, profiles, licenses)..."
+        foreach ($sub in @("data", "logs", "profiles", "licenses")) {
             $subPath = Join-Path $BundleRoot $sub
             if (Test-Path -LiteralPath $subPath) {
                 if ($sub -eq "data") {
@@ -504,7 +580,7 @@ try {
         }
         
         # 检查并清理 AppData 中的独立缓存（仅当属于 OpenSight 时）
-        foreach ($envDir in @($env:LOCALAPPDATA, $env:APPDATA)) {
+        foreach ($envDir in @($env:LOCALAPPDATA, $env:APPDATA, $env:ProgramData)) {
             if ($envDir) {
                 $appDataTarget = Join-Path $envDir "OpenSight"
                 if (Test-Path -LiteralPath $appDataTarget) {
@@ -535,7 +611,7 @@ try {
 Start-Sleep -Seconds 2
 
 # 1. 终止残留后台进程并等待完全释放
-`$maxProcWait = 10
+`$maxProcWait = 12
 while (`$maxProcWait -gt 0) {
     `$procs = Get-Process -Name 'OpenSight', 'opensight-core' -ErrorAction SilentlyContinue
     if (-not `$procs) { break }
@@ -548,7 +624,7 @@ while (`$maxProcWait -gt 0) {
 
 # 2. 尝试删除便携包或内部可执行文件
 if ($isPurge -eq 'true') {
-    for (`$i = 0; `$i -lt 8; `$i++) {
+    for (`$i = 0; `$i -lt 10; `$i++) {
         if (Test-Path -LiteralPath '$escapedBundleRoot') {
             try {
                 Remove-Item -LiteralPath '$escapedBundleRoot' -Recurse -Force -ErrorAction Stop
@@ -571,7 +647,19 @@ if ($isPurge -eq 'true') {
     }
 }
 
-# 3. 外部终态深度自检 (Evidence-based External Verification)
+# 3. 清理临时目录中的 OpenSight 临时文件与解压包
+`$tempBase = [System.IO.Path]::GetTempPath()
+`$extractDirs = @(Get-ChildItem -LiteralPath `$tempBase -Filter 'OpenSight-Extract-*' -Directory -ErrorAction SilentlyContinue)
+foreach (`$ed in `$extractDirs) {
+    Remove-Item -LiteralPath `$ed.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+if ($isPurge -eq 'true') {
+    if (Test-Path -LiteralPath '$escapedLogPath') {
+        Remove-Item -LiteralPath '$escapedLogPath' -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 4. 外部终态深度自检 (Evidence-based External Verification)
 `$clean = `$true
 `$details = @{
     processes = @()
@@ -582,7 +670,9 @@ if ($isPurge -eq 'true') {
     registry = @()
     services = @()
     tasks = @()
+    startup = @()
     files = @()
+    temp = @()
 }
 
 # 进程检查
@@ -603,15 +693,46 @@ if (`$tunRt.Count -gt 0) { `$clean = `$false; foreach (`$r in `$tunRt) { `$detai
 `$tun = @(Get-NetAdapter -Name 'OpenSight-TUN' -ErrorAction SilentlyContinue)
 if (`$tun.Count -gt 0) { `$clean = `$false; foreach (`$a in `$tun) { `$details.tun_adapters += `$a.Name } }
 
+# PnP 设备检查
+`$pnp = @(Get-PnpDevice -FriendlyName '*OpenSight-TUN*' -ErrorAction SilentlyContinue)
+if (`$pnp.Count -gt 0) { `$clean = `$false; foreach (`$d in `$pnp) { `$details.pnp_devices += "`$(`$d.FriendlyName)" } }
+
 # 注册表检查
 if (Test-Path 'HKCU:\Software\OpenSight') { `$clean = `$false; `$details.registry += 'HKCU:\Software\OpenSight' }
 if (Test-Path 'HKLM:\Software\OpenSight') { `$clean = `$false; `$details.registry += 'HKLM:\Software\OpenSight' }
+if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight') { `$clean = `$false; `$details.registry += 'HKCU:\...\Uninstall\OpenSight' }
+if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight') { `$clean = `$false; `$details.registry += 'HKLM:\...\Uninstall\OpenSight' }
+
+# 服务与任务检查
+`$svcs = @(Get-Service -Name 'OpenSight*' -ErrorAction SilentlyContinue)
+if (`$svcs.Count -gt 0) { `$clean = `$false; foreach (`$s in `$svcs) { `$details.services += `$s.Name } }
+`$tasks = @(Get-ScheduledTask -TaskName 'OpenSight*' -ErrorAction SilentlyContinue)
+if (`$tasks.Count -gt 0) { `$clean = `$false; foreach (`$t in `$tasks) { `$details.tasks += `$t.TaskName } }
+
+# 启动项检查
+`$startupFile = Join-Path ([System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Startup)) 'OpenSight.lnk'
+if (Test-Path -LiteralPath `$startupFile) { `$clean = `$false; `$details.startup += 'Startup\OpenSight.lnk' }
 
 # 文件检查
 if ($isPurge -eq 'true') {
     if (Test-Path -LiteralPath '$escapedBundleRoot') {
         `$clean = `$false
         `$details.files += "BundleRoot still exists: '$escapedBundleRoot'"
+    }
+    foreach (`$envDir in @(`$env:LOCALAPPDATA, `$env:APPDATA, `$env:ProgramData)) {
+        if (`$envDir) {
+            `$appDataTarget = Join-Path `$envDir 'OpenSight'
+            if (Test-Path -LiteralPath `$appDataTarget) {
+                `$clean = `$false
+                `$details.files += "AppData: `$appDataTarget"
+            }
+        }
+    }
+    # 检查临时文件
+    `$remExtracts = @(Get-ChildItem -LiteralPath `$tempBase -Filter 'OpenSight-Extract-*' -Directory -ErrorAction SilentlyContinue)
+    if (`$remExtracts.Count -gt 0) {
+        `$clean = `$false
+        foreach (`$re in `$remExtracts) { `$details.temp += `$re.FullName }
     }
 } else {
     `$checkBins = @('OpenSight.exe', 'opensight-core.exe', 'singbox\sing-box.exe')
@@ -624,7 +745,7 @@ if ($isPurge -eq 'true') {
     }
 }
 
-# 4. 写入终态报告 (仅当真正清理完成才置为 completed / CLEAN)
+# 5. 写入终态报告 (仅当真正清理完成才置为 completed / CLEAN)
 `$finalPayload = @{
     state = if (`$clean) { 'completed' } else { 'failed' }
     message = if (`$clean) { 'OpenSight 卸载与清理圆满完成 (CLEAN)' } else { '卸载已执行，但部分项未能完全清除。' }
@@ -643,7 +764,7 @@ if (`$dir -and (Test-Path -LiteralPath `$dir) -and ('$escapedStatusFile' -ne '$e
     Set-Content -LiteralPath '$escapedStatusFile' -Value `$finalJson -Encoding UTF8 -Force
 }
 
-# 5. 清理辅助脚本
+# 6. 清理辅助脚本
 Start-Sleep -Seconds 3
 if (Test-Path -LiteralPath '$escapedExternalScriptPath') {
     Remove-Item -LiteralPath '$escapedExternalScriptPath' -Force -ErrorAction SilentlyContinue
