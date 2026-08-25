@@ -14,12 +14,12 @@ if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
 }
 $BundleRoot = [IO.Path]::GetFullPath($BundleRoot)
 
-if ([string]::IsNullOrWhiteSpace($StatusFile)) {
-    $StatusFile = Join-Path $BundleRoot "data\uninstall_status.json"
-}
-
 $globalTempStatus = Join-Path ([System.IO.Path]::GetTempPath()) "OpenSight-Uninstall-Status.json"
 $logPath = Join-Path ([System.IO.Path]::GetTempPath()) "OpenSight-Uninstall.log"
+
+if ([string]::IsNullOrWhiteSpace($StatusFile)) {
+    $StatusFile = $globalTempStatus
+}
 
 function Log-Message([string]$Message) {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -42,13 +42,15 @@ function Write-Status([string]$State, [string]$Message, [int]$Percentage = 0, [s
         }
         $jsonStr = $payload | ConvertTo-Json -Compress -Depth 5
 
-        # 写入外部全局临时状态文件（不受 BundleRoot 删除影响）
+        # 写入外部全局临时状态文件（持久存在于 Temp 目录，绝不随 BundleRoot 丢失）
         Set-Content -LiteralPath $globalTempStatus -Value $jsonStr -Encoding UTF8 -Force
 
-        # 若请求的 StatusFile 所在目录存在，也同步写入
-        $dir = Split-Path -Parent $StatusFile
-        if ($dir -and (Test-Path -LiteralPath $dir)) {
-            Set-Content -LiteralPath $StatusFile -Value $jsonStr -Encoding UTF8 -Force
+        # 若指定的状态文件路径不同且所在目录存在，则同步写入
+        if ($StatusFile -ne $globalTempStatus) {
+            $dir = Split-Path -Parent $StatusFile
+            if ($dir -and (Test-Path -LiteralPath $dir)) {
+                Set-Content -LiteralPath $StatusFile -Value $jsonStr -Encoding UTF8 -Force
+            }
         }
     } catch {}
 }
@@ -93,7 +95,7 @@ if (Test-Path -LiteralPath $ManifestFile -PathType Leaf) {
     }
 }
 
-# 3. 辅助函数：执行系统状态自检 (Verification)
+# 3. 辅助函数：执行系统状态残留自检 (Evidence-based Verification)
 function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
     $report = @{
         clean = $true
@@ -107,6 +109,7 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
         tasks = @()
         startup = @()
         files = @()
+        openvpn = @()
         errors = @()
     }
 
@@ -134,22 +137,40 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
 
     # B. 检查防火墙规则 (OpenSight-*)
     try {
-        $rules = @(Get-NetFirewallRule -Name "OpenSight-*" -ErrorAction SilentlyContinue)
-        if ($rules.Count -gt 0) {
-            foreach ($r in $rules) {
-                $report.firewall_rules += $r.Name
+        $prefixes = @("OpenSight-", "OpenSight-KillSwitch-")
+        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.firewall_rule_prefixes) {
+            $prefixes = $installManifest.owned_network_resources.firewall_rule_prefixes
+        }
+        foreach ($pfx in $prefixes) {
+            $filterName = if ($pfx.EndsWith("*")) { $pfx } else { $pfx + "*" }
+            $rules = @(Get-NetFirewallRule -Name $filterName -ErrorAction SilentlyContinue)
+            if ($rules.Count -gt 0) {
+                foreach ($r in $rules) {
+                    if ($report.firewall_rules -notcontains $r.Name) {
+                        $report.firewall_rules += $r.Name
+                    }
+                }
+                $report.clean = $false
             }
-            $report.clean = $false
         }
     } catch {
         $report.errors += "防火墙自检异常: $_"
     }
 
-    # C. 检查 OpenSight 专属路由
+    # C. 检查 OpenSight 专属路由 (严格归属校验)
     try {
         $ownedPrefixes = @("172.19.0.0/30", "fdfe:dcba:9876::/126")
-        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.route_destinations) {
-            $ownedPrefixes = $installManifest.owned_network_resources.route_destinations
+        if ($installManifest -and $installManifest.owned_network_resources) {
+            if ($installManifest.owned_network_resources.route_destinations) {
+                $ownedPrefixes = $installManifest.owned_network_resources.route_destinations
+            }
+            if ($installManifest.owned_network_resources.tracked_routes) {
+                foreach ($tr in $installManifest.owned_network_resources.tracked_routes) {
+                    if ($tr.destination_prefix -and $ownedPrefixes -notcontains $tr.destination_prefix) {
+                        $ownedPrefixes += $tr.destination_prefix
+                    }
+                }
+            }
         }
         foreach ($pfx in $ownedPrefixes) {
             $routes = @(Get-NetRoute -DestinationPrefix $pfx -ErrorAction SilentlyContinue)
@@ -174,12 +195,18 @@ function Invoke-ResidualCheck([switch]$CheckFiles = $false) {
 
     # D. 检查 TUN 网卡
     try {
-        $adapters = @(Get-NetAdapter -Name "OpenSight-TUN" -ErrorAction SilentlyContinue)
-        if ($adapters.Count -gt 0) {
-            foreach ($a in $adapters) {
-                $report.tun_adapters += $a.Name
+        $adapterNames = @("OpenSight-TUN")
+        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.adapters) {
+            $adapterNames = $installManifest.owned_network_resources.adapters
+        }
+        foreach ($aname in $adapterNames) {
+            $adapters = @(Get-NetAdapter -Name $aname -ErrorAction SilentlyContinue)
+            if ($adapters.Count -gt 0) {
+                foreach ($a in $adapters) {
+                    $report.tun_adapters += $a.Name
+                }
+                $report.clean = $false
             }
-            $report.clean = $false
         }
     } catch {
         $report.errors += "TUN 网卡自检异常: $_"
@@ -320,8 +347,17 @@ try {
     Log-Message "正在清理 OpenSight 专属路由..."
     try {
         $ownedPrefixes = @("172.19.0.0/30", "fdfe:dcba:9876::/126")
-        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.route_destinations) {
-            $ownedPrefixes = $installManifest.owned_network_resources.route_destinations
+        if ($installManifest -and $installManifest.owned_network_resources) {
+            if ($installManifest.owned_network_resources.route_destinations) {
+                $ownedPrefixes = $installManifest.owned_network_resources.route_destinations
+            }
+            if ($installManifest.owned_network_resources.tracked_routes) {
+                foreach ($tr in $installManifest.owned_network_resources.tracked_routes) {
+                    if ($tr.destination_prefix -and $ownedPrefixes -notcontains $tr.destination_prefix) {
+                        $ownedPrefixes += $tr.destination_prefix
+                    }
+                }
+            }
         }
         foreach ($pfx in $ownedPrefixes) {
             $routes = @(Get-NetRoute -DestinationPrefix $pfx -ErrorAction SilentlyContinue)
@@ -343,10 +379,17 @@ try {
     Write-Status "cleaning_firewall" "正在清理 OpenSight 防火墙安全规则..." 45 "CLEANING_FIREWALL"
     Log-Message "正在清理防火墙规则 (OpenSight-*)..."
     try {
-        $fwRules = @(Get-NetFirewallRule -Name "OpenSight-*" -ErrorAction SilentlyContinue)
-        foreach ($r in $fwRules) {
-            Log-Message "删除防火墙规则: $($r.Name)"
-            Remove-NetFirewallRule -Name $r.Name -ErrorAction SilentlyContinue
+        $prefixes = @("OpenSight-", "OpenSight-KillSwitch-")
+        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.firewall_rule_prefixes) {
+            $prefixes = $installManifest.owned_network_resources.firewall_rule_prefixes
+        }
+        foreach ($pfx in $prefixes) {
+            $filterName = if ($pfx.EndsWith("*")) { $pfx } else { $pfx + "*" }
+            $fwRules = @(Get-NetFirewallRule -Name $filterName -ErrorAction SilentlyContinue)
+            foreach ($r in $fwRules) {
+                Log-Message "删除防火墙规则: $($r.Name)"
+                Remove-NetFirewallRule -Name $r.Name -ErrorAction SilentlyContinue
+            }
         }
     } catch {
         Log-Message "防火墙规则清理异常: $_"
@@ -356,10 +399,16 @@ try {
     Write-Status "removing_adapter" "正在移除 OpenSight-TUN 虚拟网卡..." 55 "REMOVING_ADAPTER"
     Log-Message "正在清理 OpenSight-TUN 虚拟网卡..."
     try {
-        $tunAdapter = Get-NetAdapter -Name "OpenSight-TUN" -ErrorAction SilentlyContinue
-        if ($tunAdapter) {
-            Disable-NetAdapter -Name $tunAdapter.Name -Confirm:$false -ErrorAction SilentlyContinue
-            Remove-NetAdapter -Name $tunAdapter.Name -Confirm:$false -ErrorAction SilentlyContinue
+        $adapterNames = @("OpenSight-TUN")
+        if ($installManifest -and $installManifest.owned_network_resources -and $installManifest.owned_network_resources.adapters) {
+            $adapterNames = $installManifest.owned_network_resources.adapters
+        }
+        foreach ($aname in $adapterNames) {
+            $tunAdapter = Get-NetAdapter -Name $aname -ErrorAction SilentlyContinue
+            if ($tunAdapter) {
+                Disable-NetAdapter -Name $tunAdapter.Name -Confirm:$false -ErrorAction SilentlyContinue
+                Remove-NetAdapter -Name $tunAdapter.Name -Confirm:$false -ErrorAction SilentlyContinue
+            }
         }
     } catch {
         Log-Message "TUN 网卡移除警告: $_"
@@ -379,11 +428,17 @@ try {
     Write-Status "evaluating_openvpn" "正在评估 OpenVPN 组件归属权..." 65 "EVALUATING_OPENVPN"
     $msiPath = Join-Path $BundleRoot "openvpn\OpenVPN-2.7.5-I001-amd64.msi"
     $shouldUninstallOpenVpn = $false
+    $msiProductCode = $null
 
-    if ($installManifest -and $installManifest.openvpn_driver_metadata -and $installManifest.openvpn_driver_metadata.installed_by_opensight) {
-        $shouldUninstallOpenVpn = $true
-    } elseif (Test-Path -LiteralPath $msiPath -PathType Leaf) {
-        # 兼容检查 repair_status.json
+    if ($installManifest -and $installManifest.openvpn_driver_metadata) {
+        if ($installManifest.openvpn_driver_metadata.installed_by_opensight) {
+            $shouldUninstallOpenVpn = $true
+            $msiProductCode = $installManifest.openvpn_driver_metadata.msi_product_code
+        }
+    }
+    
+    if (-not $shouldUninstallOpenVpn) {
+        # 检查 repair_status.json 作为安装凭据兜底
         $repairStatusFile = Join-Path $BundleRoot "data\repair_status.json"
         if (Test-Path -LiteralPath $repairStatusFile -PathType Leaf) {
             try {
@@ -395,12 +450,19 @@ try {
         }
     }
 
-    if ($shouldUninstallOpenVpn -and (Test-Path -LiteralPath $msiPath -PathType Leaf)) {
+    if ($shouldUninstallOpenVpn) {
         Log-Message "检测到由 OpenSight 管理的专属 OpenVPN 驱动组件，正在执行安全静默卸载..."
         Write-Status "uninstalling_openvpn" "正在卸载 OpenSight 专属 OpenVPN 驱动..." 75 "UNINSTALLING_OPENVPN"
         try {
-            $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/x", "`"$msiPath`"", "/qn", "/norestart") -Wait -PassThru -ErrorAction SilentlyContinue
-            Log-Message "OpenVPN msiexec 卸载返回码: $($msiProc.ExitCode)"
+            if ($msiProductCode) {
+                Log-Message "使用 ProductCode 执行静默卸载: $msiProductCode"
+                $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/x", "$msiProductCode", "/qn", "/norestart") -Wait -PassThru -ErrorAction SilentlyContinue
+                Log-Message "OpenVPN ProductCode 卸载返回码: $($msiProc.ExitCode)"
+            } elseif (Test-Path -LiteralPath $msiPath -PathType Leaf) {
+                Log-Message "使用本地 MSI 执行静默卸载: $msiPath"
+                $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/x", "`"$msiPath`"", "/qn", "/norestart") -Wait -PassThru -ErrorAction SilentlyContinue
+                Log-Message "OpenVPN MSI 卸载返回码: $($msiProc.ExitCode)"
+            }
         } catch {
             Log-Message "OpenVPN 卸载调用异常: $_"
         }
@@ -472,9 +534,21 @@ try {
 `$ErrorActionPreference = 'SilentlyContinue'
 Start-Sleep -Seconds 2
 
-# 1. 尝试删除便携包或内部可执行文件
+# 1. 终止残留后台进程并等待完全释放
+`$maxProcWait = 10
+while (`$maxProcWait -gt 0) {
+    `$procs = Get-Process -Name 'OpenSight', 'opensight-core' -ErrorAction SilentlyContinue
+    if (-not `$procs) { break }
+    foreach (`$p in `$procs) {
+        Stop-Process -Id `$p.Id -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Milliseconds 500
+    `$maxProcWait--
+}
+
+# 2. 尝试删除便携包或内部可执行文件
 if ($isPurge -eq 'true') {
-    for (`$i = 0; `$i -lt 6; `$i++) {
+    for (`$i = 0; `$i -lt 8; `$i++) {
         if (Test-Path -LiteralPath '$escapedBundleRoot') {
             try {
                 Remove-Item -LiteralPath '$escapedBundleRoot' -Recurse -Force -ErrorAction Stop
@@ -488,7 +562,7 @@ if ($isPurge -eq 'true') {
     }
 } else {
     # 正常模式：删除核心二进制
-    `$binaries = @('OpenSight.exe', 'opensight-core.exe', 'singbox\sing-box.exe')
+    `$binaries = @('OpenSight.exe', 'opensight-core.exe', 'singbox\sing-box.exe', 'openvpn\openvpn.exe')
     foreach (`$b in `$binaries) {
         `$bp = Join-Path '$escapedBundleRoot' `$b
         if (Test-Path -LiteralPath `$bp) {
@@ -497,7 +571,7 @@ if ($isPurge -eq 'true') {
     }
 }
 
-# 2. 外部终态深度自检 (External Verification)
+# 3. 外部终态深度自检 (Evidence-based External Verification)
 `$clean = `$true
 `$details = @{
     processes = @()
@@ -513,36 +587,49 @@ if ($isPurge -eq 'true') {
 
 # 进程检查
 `$procs = Get-Process -Name 'OpenSight', 'opensight-core' -ErrorAction SilentlyContinue
-if (`$procs) { `$clean = `$false; `$details.processes += 'OpenSight process running' }
+if (`$procs) { `$clean = `$false; foreach (`$p in `$procs) { `$details.processes += "PID `$(`$p.Id): `$(`$p.ProcessName)" } }
 
 # 防火墙检查
 `$fw = @(Get-NetFirewallRule -Name 'OpenSight-*' -ErrorAction SilentlyContinue)
-if (`$fw.Count -gt 0) { `$clean = `$false; `$details.firewall_rules += 'Firewall rules present' }
+if (`$fw.Count -gt 0) { `$clean = `$false; foreach (`$r in `$fw) { `$details.firewall_rules += `$r.Name } }
 
 # 路由检查
 `$rt = @(Get-NetRoute -DestinationPrefix '172.19.0.0/30', 'fdfe:dcba:9876::/126' -ErrorAction SilentlyContinue)
-if (`$rt.Count -gt 0) { `$clean = `$false; `$details.routes += 'OpenSight routes present' }
+if (`$rt.Count -gt 0) { `$clean = `$false; foreach (`$r in `$rt) { `$details.routes += "`$(`$r.DestinationPrefix)" } }
+`$tunRt = @(Get-NetRoute -InterfaceAlias 'OpenSight-TUN' -ErrorAction SilentlyContinue)
+if (`$tunRt.Count -gt 0) { `$clean = `$false; foreach (`$r in `$tunRt) { `$details.routes += "TUN-Route: `$(`$r.DestinationPrefix)" } }
 
-# TUN 检查
+# TUN 网卡检查
 `$tun = @(Get-NetAdapter -Name 'OpenSight-TUN' -ErrorAction SilentlyContinue)
-if (`$tun.Count -gt 0) { `$clean = `$false; `$details.tun_adapters += 'OpenSight-TUN present' }
+if (`$tun.Count -gt 0) { `$clean = `$false; foreach (`$a in `$tun) { `$details.tun_adapters += `$a.Name } }
 
 # 注册表检查
-if (Test-Path 'HKCU:\Software\OpenSight') { `$clean = `$false; `$details.registry += 'HKCU present' }
-if (Test-Path 'HKLM:\Software\OpenSight') { `$clean = `$false; `$details.registry += 'HKLM present' }
+if (Test-Path 'HKCU:\Software\OpenSight') { `$clean = `$false; `$details.registry += 'HKCU:\Software\OpenSight' }
+if (Test-Path 'HKLM:\Software\OpenSight') { `$clean = `$false; `$details.registry += 'HKLM:\Software\OpenSight' }
 
-# 文件检查 (Purge 模式)
-if ($isPurge -eq 'true' -and (Test-Path -LiteralPath '$escapedBundleRoot')) {
-    `$clean = `$false
-    `$details.files += 'BundleRoot still exists'
+# 文件检查
+if ($isPurge -eq 'true') {
+    if (Test-Path -LiteralPath '$escapedBundleRoot') {
+        `$clean = `$false
+        `$details.files += "BundleRoot still exists: '$escapedBundleRoot'"
+    }
+} else {
+    `$checkBins = @('OpenSight.exe', 'opensight-core.exe', 'singbox\sing-box.exe')
+    foreach (`$cb in `$checkBins) {
+        `$cbp = Join-Path '$escapedBundleRoot' `$cb
+        if (Test-Path -LiteralPath `$cbp) {
+            `$clean = `$false
+            `$details.files += `$cb
+        }
+    }
 }
 
-# 3. 写入终态报告
+# 4. 写入终态报告 (仅当真正清理完成才置为 completed / CLEAN)
 `$finalPayload = @{
     state = if (`$clean) { 'completed' } else { 'failed' }
-    message = if (`$clean) { 'OpenSight 卸载与清理圆满完成 (CLEAN)' } else { '卸载已执行，但部分非关键项未能自动移除。' }
+    message = if (`$clean) { 'OpenSight 卸载与清理圆满完成 (CLEAN)' } else { '卸载已执行，但部分项未能完全清除。' }
     percentage = if (`$clean) { 100 } else { 0 }
-    code = if (`$clean) { 'CLEAN' } else { 'PARTIAL_RESIDUALS' }
+    code = if (`$clean) { 'CLEAN' } else { 'RESIDUALS_FOUND' }
     purge_data = ($isPurge -eq 'true')
     verify_only = `$false
     updated_at = [int][double]::Parse((Get-Date -UFormat %s))
@@ -552,15 +639,12 @@ if ($isPurge -eq 'true' -and (Test-Path -LiteralPath '$escapedBundleRoot')) {
 Set-Content -LiteralPath '$escapedGlobalTempStatus' -Value `$finalJson -Encoding UTF8 -Force
 
 `$dir = Split-Path -Parent '$escapedStatusFile'
-if (`$dir -and (Test-Path -LiteralPath `$dir)) {
+if (`$dir -and (Test-Path -LiteralPath `$dir) -and ('$escapedStatusFile' -ne '$escapedGlobalTempStatus')) {
     Set-Content -LiteralPath '$escapedStatusFile' -Value `$finalJson -Encoding UTF8 -Force
 }
 
-# 4. 清理临时日志与本辅助脚本
+# 5. 清理辅助脚本
 Start-Sleep -Seconds 3
-if (Test-Path -LiteralPath '$escapedLogPath') {
-    Remove-Item -LiteralPath '$escapedLogPath' -Force -ErrorAction SilentlyContinue
-}
 if (Test-Path -LiteralPath '$escapedExternalScriptPath') {
     Remove-Item -LiteralPath '$escapedExternalScriptPath' -Force -ErrorAction SilentlyContinue
 }

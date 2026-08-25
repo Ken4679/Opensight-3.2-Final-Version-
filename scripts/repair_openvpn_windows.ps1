@@ -65,6 +65,19 @@ try {
         New-Item -ItemType Directory -Path $OpenVpnDir -Force | Out-Null
         Get-ChildItem -LiteralPath $bin.Directory.FullName -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $OpenVpnDir $_.Name) -Force }
 
+        # 尝试通过 Windows Installer COM 接口或注册表读取 MSI ProductCode
+        $prodCode = $null
+        try {
+            $windowsInstaller = New-Object -ComObject WindowsInstaller.Installer
+            $database = $windowsInstaller.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $windowsInstaller, @($Msi, 0))
+            $view = $database.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $database, @("SELECT Value FROM Property WHERE Property = 'ProductCode'"))
+            $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+            $record = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
+            if ($record) {
+                $prodCode = $record.GetType().InvokeMember("StringData", "GetProperty", $null, $record, @(1))
+            }
+        } catch {}
+
         # 记录安装归属权到 opensight-install-manifest.json
         $manifestPath = Join-Path $BundleRoot "opensight-install-manifest.json"
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
@@ -76,6 +89,10 @@ try {
                     $m.openvpn_driver_metadata.install_path = $OpenVpnDir
                     $m.openvpn_driver_metadata.version = $Version
                     $m.openvpn_driver_metadata.expected_sha256 = $ExpectedHash
+                    $m.openvpn_driver_metadata.source_msi = $MsiName
+                    if ($prodCode) {
+                        $m.openvpn_driver_metadata.msi_product_code = $prodCode
+                    }
                     $m | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $manifestPath -Encoding UTF8 -Force
                 }
             } catch {}

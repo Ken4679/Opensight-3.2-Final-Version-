@@ -7,6 +7,7 @@ from opensight.core.constants import APP_VERSION, APP_NAME, INSTALL_MANIFEST_FIL
 from opensight.core.safety import PortablePaths
 from opensight.packaging.install_manifest import (
     InstallManifest,
+    TrackedRoute,
     generate_install_manifest,
     load_install_manifest,
 )
@@ -44,6 +45,10 @@ class TestUninstallationZeroResidual(unittest.TestCase):
             self.assertFalse(manifest.is_owned_route("0.0.0.0/0"))
             self.assertFalse(manifest.is_owned_route("192.168.1.0/24"))
 
+            # Dynamic route recording
+            manifest.record_tracked_route("10.8.0.0/24", gateway="10.8.0.1", interface_alias="OpenSight-TUN")
+            self.assertTrue(manifest.is_owned_route("10.8.0.0/24"))
+
             # OpenVPN driver ownership recording
             manifest.openvpn_driver_metadata.installed_by_opensight = True
             manifest.openvpn_driver_metadata.install_path = "C:/OpenSight/openvpn"
@@ -53,6 +58,7 @@ class TestUninstallationZeroResidual(unittest.TestCase):
             reloaded = load_install_manifest(tmp_path / INSTALL_MANIFEST_FILE)
             self.assertTrue(reloaded.openvpn_driver_metadata.installed_by_opensight)
             self.assertEqual(reloaded.openvpn_driver_metadata.msi_product_code, "{12345678-ABCD-EF01-2345-6789ABCDEF01}")
+            self.assertTrue(reloaded.is_owned_route("10.8.0.0/24"))
 
     def test_powershell_uninstaller_script_structure(self):
         script_path = Path(__file__).resolve().parent.parent / "scripts" / "uninstall_opensight_windows.ps1"

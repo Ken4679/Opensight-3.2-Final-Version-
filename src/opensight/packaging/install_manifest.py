@@ -19,6 +19,43 @@ from opensight.core.safety import validate_subpath, PortablePaths
 
 
 @dataclass
+class TrackedRoute:
+    destination_prefix: str
+    gateway: Optional[str] = None
+    interface_index: Optional[int] = None
+    interface_alias: Optional[str] = None
+    metric: Optional[int] = None
+    route_type: Optional[str] = None
+    created_by: str = APP_NAME
+    ownership: str = "OpenSight"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "destination_prefix": self.destination_prefix,
+            "gateway": self.gateway,
+            "interface_index": self.interface_index,
+            "interface_alias": self.interface_alias,
+            "metric": self.metric,
+            "route_type": self.route_type,
+            "created_by": self.created_by,
+            "ownership": self.ownership,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> TrackedRoute:
+        return cls(
+            destination_prefix=data.get("destination_prefix", ""),
+            gateway=data.get("gateway"),
+            interface_index=data.get("interface_index"),
+            interface_alias=data.get("interface_alias"),
+            metric=data.get("metric"),
+            route_type=data.get("route_type"),
+            created_by=data.get("created_by", APP_NAME),
+            ownership=data.get("ownership", "OpenSight"),
+        )
+
+
+@dataclass
 class OpenVpnDriverMetadata:
     msi_name: str = OPENVPN_MSI_NAME
     version: str = OPENVPN_VERSION
@@ -28,6 +65,7 @@ class OpenVpnDriverMetadata:
     installed_by_opensight: bool = False
     install_timestamp: Optional[int] = None
     install_path: Optional[str] = None
+    source_msi: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -39,6 +77,7 @@ class OpenVpnDriverMetadata:
             "installed_by_opensight": self.installed_by_opensight,
             "install_timestamp": self.install_timestamp,
             "install_path": self.install_path,
+            "source_msi": self.source_msi,
         }
 
     @classmethod
@@ -52,6 +91,7 @@ class OpenVpnDriverMetadata:
             installed_by_opensight=bool(data.get("installed_by_opensight", False)),
             install_timestamp=data.get("install_timestamp"),
             install_path=data.get("install_path"),
+            source_msi=data.get("source_msi"),
         )
 
 
@@ -65,6 +105,22 @@ class NetworkResourcesMetadata:
     route_destinations: List[str] = field(
         default_factory=lambda: ["172.19.0.0/30", "fdfe:dcba:9876::/126"]
     )
+    tracked_routes: List[TrackedRoute] = field(
+        default_factory=lambda: [
+            TrackedRoute(
+                destination_prefix="172.19.0.0/30",
+                interface_alias="OpenSight-TUN",
+                created_by=APP_NAME,
+                ownership="OpenSight",
+            ),
+            TrackedRoute(
+                destination_prefix="fdfe:dcba:9876::/126",
+                interface_alias="OpenSight-TUN",
+                created_by=APP_NAME,
+                ownership="OpenSight",
+            ),
+        ]
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -72,10 +128,27 @@ class NetworkResourcesMetadata:
             "pnp_devices": list(self.pnp_devices),
             "firewall_rule_prefixes": list(self.firewall_rule_prefixes),
             "route_destinations": list(self.route_destinations),
+            "tracked_routes": [r.to_dict() for r in self.tracked_routes],
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> NetworkResourcesMetadata:
+        tracked_list = [
+            TrackedRoute.from_dict(r)
+            for r in data.get("tracked_routes", [])
+            if isinstance(r, dict)
+        ]
+        if not tracked_list:
+            dests = data.get("route_destinations", ["172.19.0.0/30", "fdfe:dcba:9876::/126"])
+            tracked_list = [
+                TrackedRoute(
+                    destination_prefix=d,
+                    interface_alias="OpenSight-TUN",
+                    created_by=APP_NAME,
+                    ownership="OpenSight",
+                )
+                for d in dests
+            ]
         return cls(
             adapters=list(data.get("adapters", ["OpenSight-TUN"])),
             pnp_devices=list(data.get("pnp_devices", ["*OpenSight-TUN*"])),
@@ -85,6 +158,7 @@ class NetworkResourcesMetadata:
             route_destinations=list(
                 data.get("route_destinations", ["172.19.0.0/30", "fdfe:dcba:9876::/126"])
             ),
+            tracked_routes=tracked_list,
         )
 
 
@@ -209,10 +283,48 @@ class InstallManifest:
 
     def is_owned_route(self, destination_prefix: str) -> bool:
         norm = destination_prefix.strip().lower()
-        return any(
+        if any(
             norm == r.strip().lower()
             for r in self.owned_network_resources.route_destinations
+        ):
+            return True
+        return any(
+            norm == tr.destination_prefix.strip().lower()
+            for tr in self.owned_network_resources.tracked_routes
         )
+
+    def record_tracked_route(
+        self,
+        destination_prefix: str,
+        gateway: Optional[str] = None,
+        interface_index: Optional[int] = None,
+        interface_alias: Optional[str] = None,
+        metric: Optional[int] = None,
+        route_type: Optional[str] = None,
+    ) -> TrackedRoute:
+        norm = destination_prefix.strip().lower()
+        for tr in self.owned_network_resources.tracked_routes:
+            if tr.destination_prefix.strip().lower() == norm:
+                tr.gateway = gateway
+                tr.interface_index = interface_index
+                tr.interface_alias = interface_alias
+                tr.metric = metric
+                tr.route_type = route_type
+                return tr
+        new_route = TrackedRoute(
+            destination_prefix=destination_prefix,
+            gateway=gateway,
+            interface_index=interface_index,
+            interface_alias=interface_alias,
+            metric=metric,
+            route_type=route_type,
+            created_by=self.application_name,
+            ownership="OpenSight",
+        )
+        self.owned_network_resources.tracked_routes.append(new_route)
+        if destination_prefix not in self.owned_network_resources.route_destinations:
+            self.owned_network_resources.route_destinations.append(destination_prefix)
+        return new_route
 
     def save(self, base_dir: Path) -> Path:
         manifest_path = validate_subpath(base_dir, base_dir / INSTALL_MANIFEST_FILE)
