@@ -51,8 +51,8 @@ jobs:
 
       - name: Pip Dependency Vulnerability Audit
         run: |
-          pip-audit -r requirements.lock --format json --output dependency-report.json || true
-          pip-audit -r requirements.lock || echo "::warning::pip-audit identified upstream vulnerability advisories in lockfile. See dependency-report.json for details."
+          pip-audit -r requirements.lock --format json --output dependency-report.json
+          pip-audit -r requirements.lock
 
       - name: Frontend TypeScript Typecheck
         run: bun run lint
