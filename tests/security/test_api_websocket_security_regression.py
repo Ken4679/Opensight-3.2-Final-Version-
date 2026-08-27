@@ -116,5 +116,5 @@ def test_websocket_rejects_unauthorized_token_attempts(temp_paths):
     client = TestClient(app)
 
     with pytest.raises(Exception):
-        with client.websocket_connect("/ws?token=attacker_token") as ws:
+        with client.websocket_connect("/ws?token=attacker_token"):
             pass
