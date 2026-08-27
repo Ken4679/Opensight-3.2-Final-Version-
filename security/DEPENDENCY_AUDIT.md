@@ -11,15 +11,15 @@
 
 | Package | Original (pyproject.toml / requirements) | Updated Specification | Locked Version (`requirements.lock`) | Upstream Compatibility |
 | :--- | :--- | :--- | :--- | :--- |
-| **FastAPI** | `>=0.110.0` | `>=0.115.0,<1.0.0` | `0.115.0` | Python 3.10+, Starlette 0.38+, Pydantic v2 |
-| **Starlette** | *Transitive (>=0.37.2)* | `>=0.38.0,<1.0.0` | `0.38.5` | Patches Windows path traversal in StaticFiles |
-| **Pydantic** | *Transitive* | `>=2.7.0,<3.0.0` | `2.8.2` | Pydantic v2 core engine |
-| **Pydantic-Core**| *Transitive* | `>=2.18.0,<3.0.0` | `2.20.1` | Rust-backed validation core |
-| **Uvicorn** | `uvicorn[standard]>=0.28.0` | `uvicorn[standard]>=0.30.0,<1.0.0`| `0.30.6` | Modern ASGI server with HTTP/1.1 & WebSockets |
+| **FastAPI** | `>=0.110.0` | `>=0.115.0,<1.0.0` | `0.115.8` | Python 3.10+, Starlette 0.40+, Pydantic v2.10 |
+| **Starlette** | *Transitive (>=0.37.2)* | `>=0.40.0,<1.0.0` | `0.45.3` | Patches Windows path traversal & Host header parsing |
+| **Pydantic** | *Transitive* | `>=2.7.0,<3.0.0` | `2.10.6` | Pydantic v2 core engine |
+| **Pydantic-Core**| *Transitive* | `>=2.18.0,<3.0.0` | `2.27.2` | Rust-backed validation core |
+| **Uvicorn** | `uvicorn[standard]>=0.28.0` | `uvicorn[standard]>=0.30.0,<1.0.0`| `0.34.0` | Modern ASGI server with HTTP/1.1 & WebSockets |
 | **HTTPX** | `>=0.28.1` | `>=0.28.1,<1.0.0` | `0.28.1` | Secure Async HTTP client & TestClient |
-| **WebSockets** | `>=12.0` | `>=12.0,<14.0` | `12.0` | Secure framing & connection handling |
+| **WebSockets** | `>=12.0` | `>=13.0,<16.0` | `14.2` | Patches DoS & timing issues |
 | **H11** | `h11>=0.14.0` | `h11>=0.14.0,<0.15.0` | `0.14.0` | HTTP/1.1 framing & parsing compatibility with httpcore |
-| **AnyIO** | *Transitive* | `>=4.4.0` | `4.4.0` | Structured concurrency backend |
+| **AnyIO** | *Transitive* | `>=4.4.0` | `4.8.0` | Structured concurrency backend |
 
 ---
 
