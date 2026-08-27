@@ -48,14 +48,16 @@ Every original CodeQL static analysis finding has been audited, mapped to explic
 
 | Package | Baseline Version | Locked Version | Vulnerability / Advisory Addressed |
 | :--- | :--- | :--- | :--- |
-| **FastAPI** | `>=0.110.0` | `0.115.0` | Active security baseline, modern ASGI integration |
-| **Starlette** | *Transitive (>=0.37.2)* | `0.38.5` | Patches Windows path traversal & device path handling (GHSA-74m5-2c7w-9w3x / CVE-2024-47874) |
-| **Pydantic** | *Transitive* | `2.8.2` | Pydantic v2 core type validation engine |
-| **Pydantic-Core** | *Transitive* | `2.20.1` | Rust-backed schema validation core |
-| **Uvicorn** | `0.28.0` | `0.30.6` | HTTP/1.1 & WebSocket framing stability |
+| **FastAPI** | `>=0.110.0` | `0.115.8` | Active security baseline, OAuth2 regex fixes, Pydantic v2.10 compatibility |
+| **Starlette** | *Transitive (>=0.37.2)* | `0.45.3` | Patches Windows path traversal & Host header parsing (CVE-2024-47874, CVE-2026-48710) |
+| **Pydantic** | *Transitive* | `2.10.6` | Pydantic v2.10 core type validation engine |
+| **Pydantic-Core** | *Transitive* | `2.27.2` | Rust-backed schema validation core |
+| **Uvicorn** | `0.28.0` | `0.34.0` | HTTP/1.1 framing & parser state security |
+| **WebSockets** | `>=12.0` | `14.2` | Remediates memory exhaustion & fragmentation DoS (CVE-2024-49768 / CVE-2024-49769) |
+| **AnyIO** | `4.4.0` | `4.8.0` | Structured concurrency & async event loop security |
+| **DNSPython** | `2.6.1` | `2.7.0` | DNS stub resolver DoS & truncated response handling (CVE-2023-29483) |
 | **H11** | *Dev (`h11>=0.14.0`)* | `0.14.0` | HTTP/1.1 framing & parsing compatibility with httpcore |
 | **HTTPX** | `>=0.28.1` | `0.28.1` | Secure Async HTTP client & TestClient |
-| **WebSockets** | `>=12.0` | `12.0` | Frame boundary and connection stability |
 
 ### 3.2 Lockfile Reproducibility
 - Created `requirements.lock`: a flat, reproducible, hashless dependency lockfile used for deterministic installation across both Linux and Windows CI environments.
