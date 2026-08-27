@@ -30,7 +30,7 @@ dev = [
     "flake8>=6.0.0",
     "pip-audit>=2.7.0",
     "pyinstaller>=6.0.0",
-    "h11>=0.16.0",
+    "h11>=0.14.0",
 ]
 
 [project.scripts]
