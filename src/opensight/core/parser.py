@@ -100,6 +100,10 @@ class OvpnParser:
                 remotes.append(ParsedRemote(r["host"], p_port, p_proto))
 
         server_name = Path(filename).stem.upper()
+        if remotes and remotes[0].host:
+            host_candidate = remotes[0].host.strip()
+            if "." in host_candidate and not all(p.isdigit() for p in host_candidate.split(".")):
+                server_name = host_candidate.split(".")[0]
         loc = CountryResolver.resolve(server_name, remotes[0].host if remotes else None, filename)
         pid = hashlib.sha256(f"{relative_path}:{file_sha256}".encode("utf-8")).hexdigest()[:16]
 

@@ -33,6 +33,10 @@ class ParsedProfile:
     is_tcp: bool
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
+    @property
+    def protocol(self) -> str:
+        return self.primary_protocol
+
 @dataclass(frozen=True)
 class ProfileMetadata:
     profile_id: str

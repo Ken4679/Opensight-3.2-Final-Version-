@@ -84,29 +84,20 @@ class CredentialsPayload(BaseModel):
 
 
 class RulePayload(BaseModel):
-
-    executable_path: str
-
-    app_name: str
-
-    action: str
-
-    enabled: bool
-
+    executable_path: Optional[str] = ""
+    app_name: Optional[str] = ""
+    action: Optional[str] = "DIRECT"
+    enabled: bool = True
+    app_id: Optional[str] = None
 
 
 class ConnectPayload(BaseModel):
-
     node_id: str
-
     mode: str = "global"
 
 
-
 class RecentNodesPayload(BaseModel):
-
     node_ids: List[str]
-
 
 
 import secrets
@@ -143,10 +134,25 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
     probe_engine_lock = threading.Lock()
     _routing_lock = threading.RLock()
 
-    def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
+    def verify_token(request: Request):
         if allow_insecure and not auth_token:
             return True
-        if not credentials or not credentials.credentials or not secrets.compare_digest(credentials.credentials, auth_token):
+        auth_header = request.headers.get("Authorization")
+        if not auth_header:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="未授权访问: 需要有效的 Bearer Token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        parts = auth_header.split(" ", 1)
+        if len(parts) != 2 or parts[0] != "Bearer":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="未授权访问: 需要有效的 Bearer Token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        token_val = parts[1].strip()
+        if not token_val or not auth_token or not secrets.compare_digest(token_val, auth_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="未授权访问: 需要有效的 Bearer Token",
@@ -635,184 +641,113 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
 
 
     @app.post("/api/routing/rule", dependencies=[Depends(verify_token)])
-
+    @app.post("/api/routing/rules", dependencies=[Depends(verify_token)])
     def set_routing_rule(payload: RulePayload):
+        if not payload.executable_path:
+            return {"ok": False, "error": "缺少 executable_path"}
 
-        validated = AppSelector.validate_executable(payload.executable_path, payload.app_name)
-
+        app_name = payload.app_name or payload.app_id or "Application"
+        validated = AppSelector.validate_executable(payload.executable_path, app_name)
         if not validated.is_valid:
-
             return {"ok": False, "error": validated.rejection_reason}
 
         import hashlib
-
-        rule_id = "r_" + hashlib.sha256(validated.executable_path.lower().encode("utf-8")).hexdigest()[:16]
-
+        rule_id = payload.app_id or ("r_" + hashlib.sha256(validated.executable_path.lower().encode("utf-8")).hexdigest()[:16])
         action = "VPN" if payload.action == "VPN" else "DIRECT"
 
-
-
         with _routing_lock:
-
             # 1. 查询当前已存在的 VPN 规则集合
-
             with repo._db.transaction() as conn:
-
                 old_vpn_rows = conn.execute(
-
                     "SELECT executable_path FROM routing_rules WHERE is_enabled = 1 AND action = 'VPN';"
-
                 ).fetchall()
-
                 old_vpn_exes = [r["executable_path"] for r in old_vpn_rows]
 
-
-
             # 2. 计算新状态期望的 VPN 规则集合
-
             target_norm = validated.executable_path.strip().lower()
-
             is_vpn_target = (action == "VPN" and payload.enabled)
-
             filtered_exes = [x for x in old_vpn_exes if x.strip().lower() != target_norm]
-
             new_vpn_exes = filtered_exes + ([validated.executable_path] if is_vpn_target else [])
 
-
-
             # 3. 若已连接 VPN，执行两阶段补偿同步事务
-
             if vpn_mgr.is_connected():
-
                 if not vpn_mgr.sync_kill_switch(new_vpn_exes):
-
                     return {"ok": False, "error": "KillSwitch 防火墙规则同步失败，已恢复原防火墙状态"}
-
                 try:
-
                     with repo._db.transaction() as conn:
-
                         conn.execute(
-
                             "INSERT INTO routing_rules VALUES (?, ?, ?, ?, ?, strftime('%s','now')) "
-
                             "ON CONFLICT(executable_path) DO UPDATE SET "
-
                             "app_name=excluded.app_name, action=excluded.action, is_enabled=excluded.is_enabled;",
-
                             (rule_id, validated.app_name, validated.executable_path, action, 1 if payload.enabled else 0),
-
                         )
-
                 except Exception as db_err:
-
                     # 数据库提交失败：触发补偿事务，恢复旧防火墙状态
                     logger.error("设置分流规则数据库写入失败: %s", db_err, exc_info=True)
-
                     comp_ok = vpn_mgr.sync_kill_switch(old_vpn_exes)
-
                     if not comp_ok:
-
                         return {"ok": False, "error": "数据库写入失败且防火墙回滚失败"}
-
                     return {"ok": False, "error": "数据库写入失败，已恢复防火墙状态"}
-
             else:
-
                 try:
-
                     with repo._db.transaction() as conn:
-
                         conn.execute(
-
                             "INSERT INTO routing_rules VALUES (?, ?, ?, ?, ?, strftime('%s','now')) "
-
                             "ON CONFLICT(executable_path) DO UPDATE SET "
-
                             "app_name=excluded.app_name, action=excluded.action, is_enabled=excluded.is_enabled;",
-
                             (rule_id, validated.app_name, validated.executable_path, action, 1 if payload.enabled else 0),
-
                         )
-
                 except Exception as db_err:
                     logger.error("设置分流规则数据库写入失败: %s", db_err, exc_info=True)
                     return {"ok": False, "error": "数据库写入失败"}
 
-
-
         return {"ok": True}
 
-
-
     @app.delete("/api/routing/rule", dependencies=[Depends(verify_token)])
-
-    def delete_routing_rule(executable_path: str):
+    @app.delete("/api/routing/rules", dependencies=[Depends(verify_token)])
+    def delete_routing_rule(executable_path: Optional[str] = None, app_id: Optional[str] = None):
+        target_path = executable_path
+        if not target_path and app_id:
+            with repo._db.transaction() as conn:
+                row = conn.execute("SELECT executable_path FROM routing_rules WHERE rule_id = ? OR app_name = ?;", (app_id, app_id)).fetchone()
+                if row:
+                    target_path = row["executable_path"]
+        if not target_path:
+            return {"ok": True}
 
         with _routing_lock:
-
             # 1. 查询当前已存在的 VPN 规则集合
-
             with repo._db.transaction() as conn:
-
                 old_vpn_rows = conn.execute(
-
                     "SELECT executable_path FROM routing_rules WHERE is_enabled = 1 AND action = 'VPN';"
-
                 ).fetchall()
-
                 old_vpn_exes = [r["executable_path"] for r in old_vpn_rows]
 
-
-
             # 2. 计算删除后的期望 VPN 规则集合
-
-            target_norm = executable_path.strip().lower()
-
+            target_norm = target_path.strip().lower()
             new_vpn_exes = [x for x in old_vpn_exes if x.strip().lower() != target_norm]
 
-
-
             # 3. 若已连接 VPN，执行两阶段补偿同步事务
-
             if vpn_mgr.is_connected():
-
                 if not vpn_mgr.sync_kill_switch(new_vpn_exes):
-
                     return {"ok": False, "error": "KillSwitch 防火墙规则同步失败，已恢复原防火墙状态"}
-
                 try:
-
                     with repo._db.transaction() as conn:
-
-                        conn.execute("DELETE FROM routing_rules WHERE executable_path = ?;", (executable_path,))
-
+                        conn.execute("DELETE FROM routing_rules WHERE executable_path = ?;", (target_path,))
                 except Exception as db_err:
-
                     # 数据库删除失败：触发补偿事务，恢复旧防火墙状态
                     logger.error("删除分流规则数据库删除失败: %s", db_err, exc_info=True)
-
                     comp_ok = vpn_mgr.sync_kill_switch(old_vpn_exes)
-
                     if not comp_ok:
-
                         return {"ok": False, "error": "数据库删除失败且防火墙回滚失败"}
-
                     return {"ok": False, "error": "数据库删除失败，已恢复防火墙状态"}
-
             else:
-
                 try:
-
                     with repo._db.transaction() as conn:
-
-                        conn.execute("DELETE FROM routing_rules WHERE executable_path = ?;", (executable_path,))
-
+                        conn.execute("DELETE FROM routing_rules WHERE executable_path = ?;", (target_path,))
                 except Exception as db_err:
                     logger.error("删除分流规则数据库删除失败: %s", db_err, exc_info=True)
                     return {"ok": False, "error": "数据库删除失败"}
-
-
 
         return {"ok": True}
 
