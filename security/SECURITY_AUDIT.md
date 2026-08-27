@@ -53,7 +53,7 @@ Every original CodeQL static analysis finding has been audited, mapped to explic
 | **Pydantic** | *Transitive* | `2.8.2` | Pydantic v2 core type validation engine |
 | **Pydantic-Core** | *Transitive* | `2.20.1` | Rust-backed schema validation core |
 | **Uvicorn** | `0.28.0` | `0.30.6` | HTTP/1.1 & WebSocket framing stability |
-| **H11** | *Unpinned Dev* | `0.16.0` | HTTP request smuggling defense (GHSA-j9q8-8cff-73g6) |
+| **H11** | *Dev (`h11>=0.14.0`)* | `0.14.0` | HTTP/1.1 framing & parsing compatibility with httpcore |
 | **HTTPX** | `>=0.28.1` | `0.28.1` | Secure Async HTTP client & TestClient |
 | **WebSockets** | `>=12.0` | `12.0` | Frame boundary and connection stability |
 

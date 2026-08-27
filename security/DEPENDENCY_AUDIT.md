@@ -18,7 +18,7 @@
 | **Uvicorn** | `uvicorn[standard]>=0.28.0` | `uvicorn[standard]>=0.30.0,<1.0.0`| `0.30.6` | Modern ASGI server with HTTP/1.1 & WebSockets |
 | **HTTPX** | `>=0.28.1` | `>=0.28.1,<1.0.0` | `0.28.1` | Secure Async HTTP client & TestClient |
 | **WebSockets** | `>=12.0` | `>=12.0,<14.0` | `12.0` | Secure framing & connection handling |
-| **H11** | *Dev (`h11>=0.16.0`)* | `h11>=0.16.0` | `0.16.0` | HTTP request smuggling defense |
+| **H11** | `h11>=0.14.0` | `h11>=0.14.0,<0.15.0` | `0.14.0` | HTTP/1.1 framing & parsing compatibility with httpcore |
 | **AnyIO** | *Transitive* | `>=4.4.0` | `4.4.0` | Structured concurrency backend |
 
 ---
