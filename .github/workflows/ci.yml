@@ -30,11 +30,11 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Set up Node.js Environment
-        uses: actions/setup-node@v4
+      # 2. 配置 Bun 环境 (通过锁文件保证可复现)
+      - name: Set up Bun Environment
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: "20"
-          cache: "npm"
+          bun-version: 1.1.27
 
       - name: Install Python Dependencies
         run: |
@@ -43,8 +43,8 @@ jobs:
           pip install --upgrade --no-deps -r requirements.lock
           pip install --no-deps -e .
 
-      - name: Install Web Dependencies
-        run: npm ci
+      - name: Install Web & Frontend Dependencies
+        run: bun install --frozen-lockfile
 
       - name: Python Flake8 Linter
         run: flake8 src tests --config=.flake8
@@ -54,14 +54,14 @@ jobs:
           pip-audit -r requirements.lock --format json --output dependency-report.json || pip-audit -r requirements.lock
 
       - name: Frontend TypeScript Typecheck
-        run: npm run lint
+        run: bun run lint
 
       - name: Pytest Suite & Security Unit Tests
         run: |
           pytest --cov=opensight --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=test-report.xml tests/
 
       - name: Frontend Production Build Validation
-        run: npm run build
+        run: bun run build
 
       - name: Upload Test and Security Reports
         if: always()

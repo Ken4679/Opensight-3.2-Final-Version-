@@ -53,13 +53,13 @@ OpenSight 3.2 adopts a **tiered CI/CD architecture** designed for high security,
 - **Executed Tests & Steps**:
   1. `actions/checkout@v4` with `persist-credentials: false`
   2. Setup Python 3.11 with pip caching enabled
-  3. Setup Node.js 20 with npm caching enabled
-  4. Locked dependency installation: `pip install -r requirements-dev.txt -r requirements.lock -e .` & `npm ci`
+  3. Setup Bun 1.1.27 (`oven-sh/setup-bun@v2`)
+  4. Locked dependency installation: `pip install -r requirements-dev.txt -r requirements.lock -e .` & `bun install --frozen-lockfile`
   5. Python linting: `flake8 src tests --config=.flake8`
   6. Dependency vulnerability scanning: `pip-audit -r requirements.lock`
-  7. Frontend static typing check: `npm run lint` (`tsc --noEmit`)
+  7. Frontend static typing check: `bun run lint` (`tsc --noEmit`)
   8. Python unit & regression tests with coverage: `pytest --cov=opensight --junitxml=test-report.xml`
-  9. Frontend build verification: `npm run build`
+  9. Frontend build verification: `bun run build`
 - **Artifacts**: `test-report.xml`, `coverage.xml`, `dependency-report.json` (7-day retention).
 
 ---
