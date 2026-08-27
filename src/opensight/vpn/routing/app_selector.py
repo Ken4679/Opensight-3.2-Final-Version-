@@ -13,6 +13,12 @@ _CRITICAL_PROCESSES: Final[set[str]] = {
     "explorer.exe", "dwm.exe", "smss.exe", "wininit.exe"
 }
 
+_RESERVED_DEVICE_NAMES: Final[set[str]] = {
+    "con", "prn", "aux", "nul",
+    *(f"com{i}" for i in range(1, 10)),
+    *(f"lpt{i}" for i in range(1, 10)),
+}
+
 @dataclass(frozen=True)
 class ValidatedApp:
     app_name: str
@@ -34,13 +40,38 @@ class AppSelector:
     def validate_executable(cls, path_str: str, custom_name: Optional[str] = None) -> ValidatedApp:
         if not path_str or not path_str.strip():
             return ValidatedApp("", "", "", False, "没有找到可执行文件")
-        p = Path(path_str.strip()).resolve()
+        
+        raw = path_str.strip()
+        # 拒绝 UNC 路径与设备命名空间 (如 \\server\share, \\.\, \\?\)
+        if raw.startswith(("\\\\", "//", "\\\\?\\", "\\\\.\\")):
+            return ValidatedApp("", "", "", False, "不支持 UNC 网络共享或设备路径")
+        
+        # 拒绝包含空字节或非法控制字符的路径
+        if "\x00" in raw or any(ord(c) < 32 for c in raw):
+            return ValidatedApp("", "", "", False, "路径包含非法字符")
+
+        try:
+            p = Path(raw).resolve()
+        except Exception:
+            return ValidatedApp("", "", "", False, "路径解析失败")
+
+        # 检查 Windows 保留设备名称 (CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+        if p.stem.lower() in _RESERVED_DEVICE_NAMES:
+            return ValidatedApp(p.name, str(p), p.name.lower(), False, "禁止使用系统保留设备名称")
+
         if not p.exists() or is_reparse_point_or_symlink(p) or not p.is_file():
             return ValidatedApp(p.name, str(p), p.name.lower(), False, "应用文件不存在或不安全")
-        if sys.platform == "win32" and p.suffix.lower() != ".exe":
-            return ValidatedApp(p.name, str(p), p.name.lower(), False, "应用主程序必须是 EXE 文件")
+
+        if sys.platform == "win32":
+            # 必须为标准本地磁盘绝对路径
+            if not re.match(r"^[a-zA-Z]:[\\/]", str(p)):
+                return ValidatedApp(p.name, str(p), p.name.lower(), False, "应用路径必须位于本地磁盘")
+            if p.suffix.lower() != ".exe":
+                return ValidatedApp(p.name, str(p), p.name.lower(), False, "应用主程序必须是 EXE 文件")
+
         if p.name.lower() in _CRITICAL_PROCESSES:
             return ValidatedApp(p.name, str(p), p.name.lower(), False, "系统关键程序不能配置分流")
+
         return ValidatedApp(
             custom_name.strip() if custom_name and custom_name.strip() else p.stem,
             str(p),

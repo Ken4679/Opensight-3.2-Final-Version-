@@ -2,28 +2,41 @@ name: Build Windows Portable Package
 
 on:
   workflow_dispatch:
-  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-portable:
     name: Build & Validate Portable x64
     runs-on: windows-2022
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # 1. 配置 Python 环境
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
       # 2. 配置 Bun 环境 (前端依赖与构建)
-      - uses: oven-sh/setup-bun@v2
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.1.27
 
       # 3. 配置 Rust (Tauri 宿主编译环境)
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       # 4. 配置 GnuPG
       - name: Setup GnuPG from Pre-installed Git
@@ -61,7 +74,9 @@ jobs:
 
       # 11. 封装便携式发布包与安全哈希清单
       - name: Package Release Bundle
-        run: python scripts/package_release.py --commit ${{ github.sha }}
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: python scripts/package_release.py --commit $env:COMMIT_SHA
 
       # 12. 校验清单一致性与官方域名来源白名单
       - name: Verify Security Manifest
@@ -71,7 +86,10 @@ jobs:
         run: python scripts/verify_provenance.py dist/staging
 
       # 13. 上传生成的完整便携包供下载
-      - uses: actions/upload-artifact@v4
+      - name: Upload Portable Bundle Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: opensight-portable-build
           path: dist/*.zip
+          retention-days: 14
+

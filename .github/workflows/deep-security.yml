@@ -1,0 +1,61 @@
+name: Deep Security & Failure Injection
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzz_cycles:
+        description: "Number of fuzz smoke iterations"
+        required: false
+        default: "50"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deep-security-analysis:
+    name: Tier 3 - Deep Security & Failure Injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -r requirements-dev.txt
+          pip install --upgrade --no-deps -r requirements.lock
+          pip install --no-deps -e .
+
+      - name: Run Failure Injection & Fault Recovery Tests
+        run: |
+          pytest -v tests/test_failure_modes.py tests/test_probe_engine_errors.py tests/test_killswitch_and_leakguard.py --junitxml=failure-injection-report.xml
+
+      - name: Run Malicious Corpus & Fuzz Smoke Matrix
+        env:
+          FUZZ_CYCLES: ${{ inputs.fuzz_cycles || '50' }}
+        run: |
+          pytest -v tests/security/test_ovpn_security_regression.py tests/security/test_zip_security_regression.py tests/security/test_path_security_regression.py --junitxml=fuzz-smoke-report.xml
+
+      - name: Upload Deep Security Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-security-and-fuzz-reports
+          path: |
+            failure-injection-report.xml
+            fuzz-smoke-report.xml
+          retention-days: 7

@@ -6,31 +6,71 @@ on:
   pull_request:
     branches: [ "main", "master" ]
 
-jobs:
-  lint-and-test:
-    name: Lint & Unit Tests
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
+permissions:
+  contents: read
 
-      - name: Set up Python
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tier1-fast-gate:
+    name: Tier 1 - Fast Quality & Security Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python Environment
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Set up Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements-dev.txt
           pip install --upgrade --no-deps -r requirements.lock
           pip install --no-deps -e .
 
-      - name: Run Flake8 Lint
+      - name: Install Web Dependencies
+        run: npm ci
+
+      - name: Python Flake8 Linter
         run: flake8 src tests --config=.flake8
 
-      - name: Run Pip Security Audit
-        run: pip-audit
+      - name: Pip Dependency Vulnerability Audit
+        run: |
+          pip-audit -r requirements.lock --format json --output dependency-report.json || pip-audit -r requirements.lock
 
-      - name: Run Pytest Test Suite
-        run: pytest --cov=opensight tests/
+      - name: Frontend TypeScript Typecheck
+        run: npm run lint
+
+      - name: Pytest Suite & Security Unit Tests
+        run: |
+          pytest --cov=opensight --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=test-report.xml tests/
+
+      - name: Frontend Production Build Validation
+        run: npm run build
+
+      - name: Upload Test and Security Reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier1-test-and-security-reports
+          path: |
+            test-report.xml
+            coverage.xml
+            dependency-report.json
+          retention-days: 7
+

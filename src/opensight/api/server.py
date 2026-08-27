@@ -40,6 +40,7 @@ from pydantic import BaseModel
 
 
 
+from opensight.core.logger import get_logger
 from opensight.core.constants import APP_VERSION, APP_NAME
 
 from opensight.core.database import DatabaseManager, Repository
@@ -127,6 +128,7 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
         allow_headers=["Authorization", "Content-Type", "X-Requested-With", "Accept"],
     )
 
+    logger = get_logger("api.server")
     db = DatabaseManager(paths.data_dir / "opensight.db")
     repo = Repository(db)
     rec_engine = RecommendationEngine(repo)
@@ -144,7 +146,7 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
     def verify_token(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme)):
         if allow_insecure and not auth_token:
             return True
-        if not credentials or not credentials.credentials or credentials.credentials != auth_token:
+        if not credentials or not credentials.credentials or not secrets.compare_digest(credentials.credentials, auth_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="未授权访问: 需要有效的 Bearer Token",
@@ -168,7 +170,7 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = Query(None)):
         if not allow_insecure or auth_token:
-            if not token or token != auth_token:
+            if not token or not secrets.compare_digest(token, auth_token):
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
                 return
         await websocket.accept()
@@ -706,14 +708,15 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
                 except Exception as db_err:
 
                     # 数据库提交失败：触发补偿事务，恢复旧防火墙状态
+                    logger.error("设置分流规则数据库写入失败: %s", db_err, exc_info=True)
 
                     comp_ok = vpn_mgr.sync_kill_switch(old_vpn_exes)
 
                     if not comp_ok:
 
-                        return {"ok": False, "error": f"数据库写入失败且防火墙回滚失败: {db_err}"}
+                        return {"ok": False, "error": "数据库写入失败且防火墙回滚失败"}
 
-                    return {"ok": False, "error": f"数据库写入失败，已恢复防火墙状态: {db_err}"}
+                    return {"ok": False, "error": "数据库写入失败，已恢复防火墙状态"}
 
             else:
 
@@ -734,8 +737,8 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
                         )
 
                 except Exception as db_err:
-
-                    return {"ok": False, "error": f"数据库写入失败: {db_err}"}
+                    logger.error("设置分流规则数据库写入失败: %s", db_err, exc_info=True)
+                    return {"ok": False, "error": "数据库写入失败"}
 
 
 
@@ -788,14 +791,15 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
                 except Exception as db_err:
 
                     # 数据库删除失败：触发补偿事务，恢复旧防火墙状态
+                    logger.error("删除分流规则数据库删除失败: %s", db_err, exc_info=True)
 
                     comp_ok = vpn_mgr.sync_kill_switch(old_vpn_exes)
 
                     if not comp_ok:
 
-                        return {"ok": False, "error": f"数据库删除失败且防火墙回滚失败: {db_err}"}
+                        return {"ok": False, "error": "数据库删除失败且防火墙回滚失败"}
 
-                    return {"ok": False, "error": f"数据库删除失败，已恢复防火墙状态: {db_err}"}
+                    return {"ok": False, "error": "数据库删除失败，已恢复防火墙状态"}
 
             else:
 
@@ -806,8 +810,8 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
                         conn.execute("DELETE FROM routing_rules WHERE executable_path = ?;", (executable_path,))
 
                 except Exception as db_err:
-
-                    return {"ok": False, "error": f"数据库删除失败: {db_err}"}
+                    logger.error("删除分流规则数据库删除失败: %s", db_err, exc_info=True)
+                    return {"ok": False, "error": "数据库删除失败"}
 
 
 

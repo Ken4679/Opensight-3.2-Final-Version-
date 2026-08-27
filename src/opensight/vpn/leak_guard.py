@@ -725,6 +725,9 @@ class VPNLeakGuard:
             with socket.create_connection(("api.ipify.org", 443), timeout=self._timeout) as sock:
 
                 ctx = ssl.create_default_context()
+                ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+                ctx.check_hostname = True
+                ctx.verify_mode = ssl.CERT_REQUIRED
 
                 with ctx.wrap_socket(sock, server_hostname="api.ipify.org") as tls:
 

@@ -14,6 +14,62 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 app.use(express.json());
 
+// ----------------------------------------------------
+// Security: Lightweight In-Memory Rate Limiting
+// ----------------------------------------------------
+interface RateLimitBucket {
+  count: number;
+  resetTime: number;
+}
+
+function createRateLimiter(options: { windowMs: number; max: number; message?: string }) {
+  const hits = new Map<string, RateLimitBucket>();
+
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, record] of hits.entries()) {
+      if (now > record.resetTime) {
+        hits.delete(key);
+      }
+    }
+  }, options.windowMs);
+  if (cleanupTimer.unref) {
+    cleanupTimer.unref();
+  }
+
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
+    const now = Date.now();
+    const bucket = hits.get(ip);
+
+    if (!bucket || now > bucket.resetTime) {
+      hits.set(ip, { count: 1, resetTime: now + options.windowMs });
+      return next();
+    }
+
+    if (bucket.count >= options.max) {
+      const retryAfter = Math.ceil((bucket.resetTime - now) / 1000);
+      res.setHeader('Retry-After', retryAfter);
+      return res.status(429).json({
+        ok: false,
+        error: options.message || '请求过于频繁，请稍后重试',
+        retryAfter
+      });
+    }
+
+    bucket.count += 1;
+    next();
+  };
+}
+
+const apiRateLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 300, message: "API 访问频率超限" });
+const authRateLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 20, message: "凭据管理操作频率超限" });
+const actionRateLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 25, message: "VPN 状态变更操作频率超限" });
+const expensiveRateLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 10, message: "测速与安装操作过于频繁" });
+
+// Apply global API rate limit
+app.use('/api', apiRateLimiter);
+
 // In-memory data store for OpenSight
 let mockCredentials = {
   hasCredentials: true,
@@ -279,8 +335,24 @@ function broadcast(event: string, data: any) {
   });
 }
 
-// WebSocket Connection handler
-wss.on('connection', (ws) => {
+// WebSocket Connection handler with rate limiting
+const wsRateMap = new Map<string, { count: number; resetTime: number }>();
+const MAX_WS_CONNS_PER_MIN = 30;
+
+wss.on('connection', (ws, req) => {
+  const ip = req.socket.remoteAddress || '127.0.0.1';
+  const now = Date.now();
+  const bucket = wsRateMap.get(ip);
+  if (!bucket || now > bucket.resetTime) {
+    wsRateMap.set(ip, { count: 1, resetTime: now + 60000 });
+  } else {
+    bucket.count += 1;
+    if (bucket.count > MAX_WS_CONNS_PER_MIN) {
+      ws.close(1008, "Too many WebSocket connection attempts");
+      return;
+    }
+  }
+
   ws.send(JSON.stringify({
     event: 'vpn_state_change',
     data: {
@@ -389,7 +461,7 @@ function runMockProbe() {
   }, 400);
 }
 
-app.post('/api/probe/start', (req, res) => {
+app.post('/api/probe/start', expensiveRateLimiter, (req, res) => {
   runMockProbe();
   res.json({ status: "started" });
 });
@@ -404,7 +476,7 @@ app.post('/api/probe/stop', (req, res) => {
   res.json({ status: "stopping" });
 });
 
-app.post('/api/nodes/probe', (req, res) => {
+app.post('/api/nodes/probe', expensiveRateLimiter, (req, res) => {
   runMockProbe();
   res.json({ status: "probing_started" });
 });
@@ -422,7 +494,7 @@ app.get('/api/vpn/traffic', (req, res) => {
   });
 });
 
-app.post('/api/vpn/connect', (req, res) => {
+app.post('/api/vpn/connect', actionRateLimiter, (req, res) => {
   const { nodeId, node_id, mode } = req.body;
   const targetId = nodeId || node_id;
   const targetNode = mockNodes.find(n => n.nodeId === targetId) || mockNodes[0];
@@ -461,7 +533,7 @@ app.post('/api/vpn/connect', (req, res) => {
   res.json({ success: true, status: "connecting", message: "Connecting" });
 });
 
-app.post('/api/vpn/disconnect', (req, res) => {
+app.post('/api/vpn/disconnect', actionRateLimiter, (req, res) => {
   vpnState.isConnected = false;
   vpnState.code = "DISCONNECTED";
   vpnState.state = "未连接";
@@ -508,12 +580,12 @@ const handleClearCreds = (req: express.Request, res: express.Response) => {
 };
 
 app.get('/api/credentials', handleGetCreds);
-app.post('/api/credentials', handleSaveCreds);
-app.delete('/api/credentials', handleClearCreds);
+app.post('/api/credentials', authRateLimiter, handleSaveCreds);
+app.delete('/api/credentials', authRateLimiter, handleClearCreds);
 
 app.get('/api/vpn/credentials', handleGetCreds);
-app.post('/api/vpn/credentials', handleSaveCreds);
-app.delete('/api/vpn/credentials', handleClearCreds);
+app.post('/api/vpn/credentials', authRateLimiter, handleSaveCreds);
+app.delete('/api/vpn/credentials', authRateLimiter, handleClearCreds);
 
 // Routing rules endpoints
 app.get('/api/routing/rules', (req, res) => {
@@ -580,19 +652,19 @@ app.delete('/api/routing/rules/:id', (req, res) => {
   res.json({ ok: true, success: true, rules: routingRules });
 });
 
-app.post('/api/routing/start', (req, res) => {
+app.post('/api/routing/start', actionRateLimiter, (req, res) => {
   vpnState.isRoutingRunning = true;
   systemLogs.push(`[ROUTING] sing-box 分流进程启动 (TUN 虚拟网卡已接管应用流量)`);
   res.json({ ok: true, state: "RUNNING" });
 });
 
-app.post('/api/routing/stop', (req, res) => {
+app.post('/api/routing/stop', actionRateLimiter, (req, res) => {
   vpnState.isRoutingRunning = false;
   systemLogs.push(`[ROUTING] sing-box 分流进程停止`);
   res.json({ ok: true, state: "STOPPED" });
 });
 
-app.post('/api/routing/toggle', (req, res) => {
+app.post('/api/routing/toggle', actionRateLimiter, (req, res) => {
   vpnState.isRoutingRunning = !vpnState.isRoutingRunning;
   systemLogs.push(`[ROUTING] 切换 sing-box 进程状态: ${vpnState.isRoutingRunning ? "启动" : "停止"}`);
   res.json({ isRunning: vpnState.isRoutingRunning });
@@ -643,7 +715,7 @@ const startRepair = () => {
   return true;
 };
 
-app.post('/api/openvpn/install', (req, res) => {
+app.post('/api/openvpn/install', expensiveRateLimiter, (req, res) => {
   if (vpnState.isConnected || vpnState.isRoutingRunning) {
     return res.json({ error: "请先断开 VPN 并停止应用分流，再修复驱动" });
   }
@@ -659,7 +731,7 @@ app.get('/api/openvpn/install-status', (req, res) => {
   });
 });
 
-app.post('/api/system/openvpn/install', (req, res) => {
+app.post('/api/system/openvpn/install', expensiveRateLimiter, (req, res) => {
   if (isRepairing) {
     return res.json({ status: "already_running", progress: repairProgress });
   }
@@ -683,7 +755,7 @@ app.get('/api/system/openvpn/status', (req, res) => {
   });
 });
 
-app.post('/api/system/uninstall', (req, res) => {
+app.post('/api/system/uninstall', expensiveRateLimiter, (req, res) => {
   systemLogs.push(`[SYSTEM] 接收到卸载与彻底清理指令，准备清理虚拟网卡与便携目录`);
   res.json({ ok: true });
 });

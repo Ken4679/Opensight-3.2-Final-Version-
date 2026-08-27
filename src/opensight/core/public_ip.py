@@ -2,6 +2,7 @@ import asyncio
 import http.client
 import ipaddress
 import re
+import ssl
 import time
 import urllib.parse
 from typing import Optional
@@ -107,7 +108,11 @@ class PublicIPGuard:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_HOSTS:
             return None
-        conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=self._timeout)
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ssl_ctx.check_hostname = True
+        ssl_ctx.verify_mode = ssl.CERT_REQUIRED
+        conn = http.client.HTTPSConnection(parsed.hostname, parsed.port or 443, timeout=self._timeout, context=ssl_ctx)
         try:
             conn.request("GET", parsed.path or "/", headers={"User-Agent": "OpenSight/3.1", "Connection": "close"})
             response = conn.getresponse()
