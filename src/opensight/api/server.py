@@ -30,7 +30,7 @@ try:
 except Exception:
     pass
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Query
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Query
 
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
