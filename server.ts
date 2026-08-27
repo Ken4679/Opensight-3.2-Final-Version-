@@ -804,7 +804,7 @@ async function startServer() {
 
   const PORT = 3000;
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`OpenSight 3.1 server listening on http://0.0.0.0:${PORT}`);
+    console.log(`OpenSight server listening on http://0.0.0.0:${PORT}`);
   });
 }
 
