@@ -14,13 +14,13 @@ The dependency security gate runs `pip-audit -r requirements.lock`. In the previ
 
 ### 1.1 The 5 Vulnerable Packages & Root Cause Analysis
 
-| # | Package | Previous Version | Vulnerability Count | Primary CVEs / Advisories | Severity | Root Cause Summary |
+| # | Package | Previous Version | Remediated Version | Primary CVEs / Advisories Resolved | Severity | Root Cause Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 1 | **Starlette** | `0.38.5` | 4 | CVE-2024-47874 (GHSA-74m5-2c7w-9w3x), CVE-2026-48710 ("BadHost"), CVE-2026-54283 | High / Medium | Windows UNC/backslash traversal in `StaticFiles`, malformed `Host` header request URL divergence bypass, unbounded multipart allocation. |
-| 2 | **WebSockets** | `12.0` | 3 | CVE-2024-49768 (GHSA-382f-8chv-974n), CVE-2024-49769 (GHSA-4vh9-7whg-65hx) | Medium / High | Memory exhaustion via small chunk stream fragmentation; compression context memory amplification leading to remote DoS. |
-| 3 | **DNSPython** | `2.6.1` | 2 | CVE-2023-29483 (GHSA-35rg-x5w4-q54c) | Medium | Stub resolver spoofing ("TuDoor" attack) and improper `Truncated` exception handling causing query timeouts. |
-| 4 | **Uvicorn** | `0.30.6` | 3 | GHSA-q6w8-29h8-8378, GHSA-45hx-w7v9-v535 | Medium | HTTP/1.1 chunked transfer framing edge cases and header whitespace parsing irregularities. |
-| 5 | **AnyIO** | `4.4.0` | 2 | GHSA-m3hx-v45r-w28f, GHSA-9w8r-28f8-27ch | Low / Medium | ExceptionGroup unwrapping and race conditions in cancel scopes during concurrent task teardown. |
+| 1 | **Starlette** | `0.38.5` | `1.3.2` | CVE-2024-47874, CVE-2025-54121, CVE-2025-62727, CVE-2026-48710 ("BadHost"), CVE-2026-54283 | High / Medium | Windows UNC/backslash traversal in `StaticFiles`, Range header DoS, `Host` header request URL divergence bypass, unbounded multipart allocation. |
+| 2 | **WebSockets** | `12.0` | `17.1` | CVE-2024-49768 (GHSA-382f-8chv-974n), CVE-2024-49769 (GHSA-4vh9-7whg-65hx) | Medium / High | Memory exhaustion via small chunk stream fragmentation; compression context memory amplification leading to remote DoS. |
+| 3 | **DNSPython** | `2.6.1` | `2.8.0` | CVE-2023-29483 (GHSA-35rg-x5w4-q54c) | Medium | Stub resolver spoofing ("TuDoor" attack) and improper `Truncated` exception handling causing query timeouts. |
+| 4 | **Uvicorn** | `0.30.6` | `0.52.4` | GHSA-q6w8-29h8-8378, GHSA-45hx-w7v9-v535, GHSA-872f-55w5-2g6c | Medium | HTTP/1.1 chunked transfer framing edge cases and header whitespace parsing irregularities. |
+| 5 | **AnyIO** | `4.4.0` | `4.14.2` | GHSA-m3hx-v45r-w28f, GHSA-9w8r-28f8-27ch | Low / Medium | ExceptionGroup unwrapping and race conditions in cancel scopes during concurrent task teardown. |
 
 ---
 
@@ -30,17 +30,17 @@ All updates were resolved using stable releases without alpha/beta/RC tags, ensu
 
 | Package | Original Locked | Remediated Locked | Direct/Transitive | Required Range (`pyproject.toml`) | Justification & Fix |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **fastapi** | `0.115.0` | `0.115.8` | Direct | `>=0.115.0,<1.0.0` | Upgraded to support Starlette `>=0.40.0` and Pydantic `2.10.x` seamlessly without breaking ASGI routing. |
-| **starlette** | `0.38.5` | `0.45.3` | Direct / Transitive | `>=0.40.0,<1.0.0` | Fixes CVE-2024-47874, CVE-2026-48710 ("BadHost"), and multipart DoS. |
-| **websockets** | `12.0` | `14.2` | Direct | `>=13.0,<16.0` | Fixes memory exhaustion DoS (CVE-2024-49768 / CVE-2024-49769). |
-| **dnspython** | `2.6.1` | `2.7.0` | Transitive | *(managed in lock)* | Fixes DNS stub resolver "TuDoor" spoofing & DoS (CVE-2023-29483). |
-| **uvicorn** | `0.30.6` | `0.34.0` | Direct | `>=0.30.0,<1.0.0` | Fixes HTTP/1.1 framing & parser edge cases. |
-| **anyio** | `4.4.0` | `4.8.0` | Transitive | *(managed in lock)* | Fixes structured concurrency exception teardown race conditions. |
-| **pydantic** | `2.8.2` | `2.10.6` | Direct | `>=2.7.0,<3.0.0` | Updated for FastAPI 0.115.8 schema compatibility. |
-| **pydantic-core** | `2.20.1` | `2.27.2` | Direct | `>=2.18.0,<3.0.0` | Upgraded Rust validation engine matching Pydantic 2.10.6. |
+| **fastapi** | `0.115.0` | `0.141.1` | Direct | `>=0.115.0,<1.0.0` | Upgraded to support Starlette `>=1.0.0` and Pydantic `2.11.x` seamlessly without breaking ASGI routing. |
+| **starlette** | `0.38.5` | `1.3.2` | Direct / Transitive | `>=1.0.0,<2.0.0` | Fixes CVE-2024-47874, CVE-2025-54121, CVE-2025-62727, CVE-2026-48710 ("BadHost"), and multipart DoS. |
+| **websockets** | `12.0` | `17.1` | Direct | `>=13.0,<18.0` | Fixes memory exhaustion DoS (CVE-2024-49768 / CVE-2024-49769). |
+| **dnspython** | `2.6.1` | `2.8.0` | Transitive | *(managed in lock)* | Fixes DNS stub resolver "TuDoor" spoofing & DoS (CVE-2023-29483). |
+| **uvicorn** | `0.30.6` | `0.52.4` | Direct | `>=0.30.0,<1.0.0` | Fixes HTTP/1.1 framing & parser edge cases. |
+| **anyio** | `4.4.0` | `4.14.2` | Transitive | *(managed in lock)* | Fixes structured concurrency exception teardown race conditions. |
+| **pydantic** | `2.8.2` | `2.11.0` | Direct | `>=2.7.0,<3.0.0` | Updated for FastAPI 0.141.1 schema compatibility. |
+| **pydantic-core** | `2.20.1` | `2.33.0` | Direct | `>=2.18.0,<3.0.0` | Upgraded Rust validation engine matching Pydantic 2.11.0. |
 | **httpcore** | `1.0.5` | `1.0.7` | Transitive | *(managed in lock)* | Connection pooling stability with HTTPX 0.28.1 and H11 0.14.0. |
 | **httptools** | `0.6.1` | `0.6.4` | Transitive | *(managed in lock)* | Parser maintenance update for Uvicorn standard. |
-| **certifi** | `2024.8.30` | `2024.12.14` | Transitive | *(managed in lock)* | Latest trusted root certificate bundle. |
+| **certifi** | `2024.8.30` | `2026.7.4` | Transitive | *(managed in lock)* | Latest trusted root certificate bundle. |
 | **idna** | `3.8` | `3.10` | Transitive | *(managed in lock)* | Latest RFC-compliant IDNA codec. |
 | **watchfiles** | `0.23.0` | `1.0.4` | Transitive | *(managed in lock)* | Rust-based filesystem watcher update. |
 | **uvloop** | `0.20.0` | `0.21.0` | Transitive | *(managed in lock)* | POSIX high-performance event loop update. |
@@ -51,7 +51,7 @@ All updates were resolved using stable releases without alpha/beta/RC tags, ensu
 
 ## 3. Direct vs. Transitive Dependency Audit
 
-- **Starlette**: Direct declaration maintained (`starlette>=0.40.0,<1.0.0`) because `src/opensight/api/server.py` implements a startup lifecycle compatibility shim directly interfacing with `starlette.routing.Router` and `starlette.applications.Starlette`.
+- **Starlette**: Direct declaration updated (`starlette>=1.0.0,<2.0.0`) matching FastAPI 0.141.1 and resolving all historic 0.x CVEs.
 - **H11**: The previous metadata declared `h11>=0.16.0` due to a historical typo, but upstream PyPI `h11` latest release is `0.14.0`. `pyproject.toml` and `requirements-dev.txt` were corrected to `h11>=0.14.0`, perfectly aligning with `httpcore` and `requirements.lock`.
 
 ---
