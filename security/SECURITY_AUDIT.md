@@ -1,10 +1,10 @@
 # OpenSight 3.2 — Final Security Audit & Delivery Review
 
-> **Document Version**: 3.2.0-sec-delivery  
+> **Document Version**: 3.2.0-sec-stabilized  
 > **Date**: 2026-08-27  
 > **Review Scope**: CodeQL Resolution Audit, Dependency & Supply Chain Verification, Regression Test Suite, GitHub Actions CI Hardening, Windows Dynamic Testing  
 > **Target Repository**: `Ken4679/Opensight-3.2-Final-Version-`  
-> **Branch**: `security/audit-fixes` -> `main`
+> **Active Branch**: `main` (Stabilization Source of Truth)
 
 ---
 
@@ -150,22 +150,22 @@ In accordance with honest engineering disclosures:
 
 ---
 
-## 14. Release Recommendation
+## 14. Current Stabilization Status & Recommendation
 
-### **RELEASE RECOMMENDED**
+### **MAIN STABILIZED — READY FOR SECURITY BRANCH COPY**
 
-The OpenSight 3.2 codebase demonstrates complete resolution of all static analysis security findings, robust dependency supply-chain pinning, comprehensive regression test coverage, hardened GitHub Actions workflows, and strict fail-closed network and process management.
+The OpenSight 3.2 codebase on `main` demonstrates complete resolution of all static analysis security findings, robust dependency supply-chain pinning (`requirements.lock`), comprehensive regression test coverage (`tests/security/`), hardened GitHub Actions workflows, and strict fail-closed network and process management.
+
+Status: **READY_FOR_SECURITY_BRANCH**
 
 ---
 
-## 15. Proposed Pull Request Details
+## 15. Stabilization Scope Summary
 
-- **Source Branch**: `security/audit-fixes`
-- **Target Branch**: `main`
-- **Suggested Title**: `security: audit, dependency hardening, and automated security testing`
-- **PR Scope Summary**:
-  - Remediate 17 CodeQL findings across subprocess, path, auth, and parser modules.
-  - Upgrade and lock FastAPI/Starlette/Pydantic stack in `requirements.lock`.
-  - Add comprehensive regression and malicious input test suites (`tests/security/`, `tests/malicious_inputs/`).
-  - Implement tiered, least-privilege GitHub Actions CI/CD workflows (`ci.yml`, `windows-e2e.yml`, `deep-security.yml`).
-  - Provide full security documentation (`SECURITY_BASELINE.md`, `CODEQL_REVIEW.md`, `DEPENDENCY_AUDIT.md`, `SECURITY_TESTS.md`, `CI_DESIGN.md`, `WINDOWS_E2E_REPORT.md`, `SECURITY_AUDIT.md`).
+- **Active Source of Truth**: `main`
+- **Scope Implemented**:
+  - Remediated 17 CodeQL findings across subprocess, path, auth, timing attack, and parser modules.
+  - Upgraded and locked FastAPI (0.115.0), Starlette (0.38.5), Pydantic (2.8.2), Uvicorn (0.30.6), HTTPX (0.28.1), and H11 (0.14.0) in `requirements.lock`.
+  - Added comprehensive regression and malicious input test suites (`tests/security/`, `tests/malicious_inputs/`).
+  - Implemented tiered, least-privilege GitHub Actions CI/CD workflows (`ci.yml`, `windows-e2e.yml`, `deep-security.yml`).
+  - Provided full security documentation (`SECURITY_BASELINE.md`, `CODEQL_REVIEW.md`, `DEPENDENCY_AUDIT.md`, `SECURITY_TESTS.md`, `CI_DESIGN.md`, `WINDOWS_E2E_REPORT.md`, `SECURITY_AUDIT.md`).
