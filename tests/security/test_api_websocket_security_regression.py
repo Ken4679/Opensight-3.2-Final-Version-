@@ -106,7 +106,7 @@ def test_websocket_rapid_connect_and_disconnect(temp_paths):
     for _ in range(5):
         with client.websocket_connect(f"/ws?token={token}") as ws:
             data = ws.receive_json()
-            assert "event" in data or "type" in data or data is not None
+            assert data.get("event") == "connected"
 
 
 def test_websocket_rejects_unauthorized_token_attempts(temp_paths):
@@ -117,4 +117,4 @@ def test_websocket_rejects_unauthorized_token_attempts(temp_paths):
 
     with pytest.raises(Exception):
         with client.websocket_connect("/ws?token=attacker_token") as ws:
-            ws.receive_json()
+            pass

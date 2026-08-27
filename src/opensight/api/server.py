@@ -175,17 +175,16 @@ def create_app(paths: PortablePaths, auth_token: str = "", allow_insecure: bool 
                 return
         await websocket.accept()
         ws_clients.append(websocket)
+        try:
+            await websocket.send_json({"event": "connected", "data": {"status": "ok"}})
+        except Exception:
+            pass
 
         try:
-
             while True:
-
                 await websocket.receive_text()
-
         except WebSocketDisconnect:
-
             if websocket in ws_clients:
-
                 ws_clients.remove(websocket)
 
 

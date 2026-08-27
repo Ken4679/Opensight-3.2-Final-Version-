@@ -100,7 +100,7 @@ redirect-gateway def1
     # 5. WebSocket live event push
     with client.websocket_connect(f"/ws?token={auth_token}") as ws:
         data = ws.receive_json()
-        assert data is not None
+        assert data.get("event") == "connected"
 
     # 6. Backend clean state verification
     del client
