@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
 
 permissions:
   contents: read
@@ -17,7 +17,8 @@ jobs:
   tier1-fast-gate:
     name: Tier 1 - Fast Quality & Security Gate
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -30,24 +31,34 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      # 2. 配置 Bun 环境 (通过锁文件保证可复现)
       - name: Set up Bun Environment
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.1.27
 
-      - name: Install Python Dependencies
+      - name: Upgrade Python Packaging Tools
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -r requirements-dev.txt
-          pip install --upgrade --no-deps -r requirements.lock
-          pip install --no-deps -e .
+
+      - name: Install Locked Python Dependencies
+        run: |
+          python -m pip install -r requirements.lock
+
+      - name: Install Development Dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+
+      - name: Install OpenSight
+        run: |
+          python -m pip install --no-deps -e .
 
       - name: Install Web & Frontend Dependencies
-        run: bun install --frozen-lockfile
+        run: |
+          bun install --frozen-lockfile
 
       - name: Python Flake8 Linter
-        run: flake8 src tests --config=.flake8
+        run: |
+          flake8 src tests --config=.flake8
 
       - name: Pip Dependency Vulnerability Audit
         run: |
@@ -55,14 +66,21 @@ jobs:
           pip-audit -r requirements.lock
 
       - name: Frontend TypeScript Typecheck
-        run: bun run lint
+        run: |
+          bun run lint
 
       - name: Pytest Suite & Security Unit Tests
         run: |
-          pytest --cov=opensight --cov-report=term-missing --cov-report=xml:coverage.xml --junitxml=test-report.xml tests/
+          pytest \
+            --cov=opensight \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --junitxml=test-report.xml \
+            tests/
 
       - name: Frontend Production Build Validation
-        run: bun run build
+        run: |
+          bun run build
 
       - name: Upload Test and Security Reports
         if: always()
@@ -74,4 +92,3 @@ jobs:
             coverage.xml
             dependency-report.json
           retention-days: 7
-
