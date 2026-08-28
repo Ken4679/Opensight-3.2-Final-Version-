@@ -7,11 +7,14 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BundleRoot = Split-Path -Parent $ScriptDir
 $OpenVpnDir = Join-Path $BundleRoot "openvpn"
+
 $UacCancelledCode = 1223
+
 
 if ([string]::IsNullOrWhiteSpace($StatusFile)) {
     $StatusFile = Join-Path $BundleRoot "data\repair_status.json"
 }
+
 
 function Write-Status {
     param(
@@ -49,6 +52,7 @@ function Write-Status {
     }
 }
 
+
 function Read-Constant {
     param(
         [string]$Name,
@@ -62,6 +66,7 @@ function Read-Constant {
     $lines = Get-Content -LiteralPath $Path -Encoding UTF8
 
     foreach ($line in $lines) {
+
         $trimmed = $line.Trim()
 
         if (-not $trimmed.StartsWith($Name)) {
@@ -77,6 +82,7 @@ function Read-Constant {
         $value = $trimmed.Substring($equalIndex + 1).Trim()
 
         if ($value.Length -ge 2) {
+
             $firstChar = $value.Substring(0, 1)
             $lastChar = $value.Substring($value.Length - 1, 1)
 
@@ -95,14 +101,21 @@ function Read-Constant {
     throw "Unable to read constant: $Name"
 }
 
+
 function Test-Administrator {
+
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+
+    $principal = New-Object `
+        Security.Principal.WindowsPrincipal(
+            $identity
+        )
 
     return $principal.IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )
 }
+
 
 function Get-MsiProductCode {
     param(
@@ -110,7 +123,9 @@ function Get-MsiProductCode {
     )
 
     try {
-        $installer = New-Object -ComObject WindowsInstaller.Installer
+
+        $installer = New-Object `
+            -ComObject WindowsInstaller.Installer
 
         $database = $installer.GetType().InvokeMember(
             "OpenDatabase",
@@ -125,7 +140,9 @@ function Get-MsiProductCode {
             "InvokeMethod",
             $null,
             $database,
-            @("SELECT Value FROM Property WHERE Property = 'ProductCode'")
+            @(
+                "SELECT Value FROM Property WHERE Property = 'ProductCode'"
+            )
         )
 
         $view.GetType().InvokeMember(
@@ -145,6 +162,7 @@ function Get-MsiProductCode {
         )
 
         if ($null -ne $record) {
+
             return $record.GetType().InvokeMember(
                 "StringData",
                 "GetProperty",
@@ -161,29 +179,58 @@ function Get-MsiProductCode {
     return $null
 }
 
-Write-Status "starting" "Checking local repair files..." 5 "OK"
 
-$Constants = Join-Path $BundleRoot "src\opensight\core\constants.py"
-$SecurityManifest = Join-Path $BundleRoot "SECURITY-MANIFEST.json"
+Write-Status `
+    "starting" `
+    "Checking local repair files..." `
+    5 `
+    "OK"
+
+
+$Constants = Join-Path `
+    $BundleRoot `
+    "src\opensight\core\constants.py"
+
+$SecurityManifest = Join-Path `
+    $BundleRoot `
+    "SECURITY-MANIFEST.json"
+
 
 $MsiName = $null
 $ExpectedHash = $null
 $ExpectedSize = $null
 $Version = $null
 
+
 try {
 
     if (Test-Path -LiteralPath $Constants -PathType Leaf) {
 
-        $MsiName = Read-Constant "OPENVPN_MSI_NAME" $Constants
-        $ExpectedHash = Read-Constant "OPENVPN_MSI_SHA256" $Constants
-        $ExpectedSize = [int64](Read-Constant "OPENVPN_MSI_SIZE" $Constants)
-        $Version = Read-Constant "OPENVPN_VERSION" $Constants
+        $MsiName = Read-Constant `
+            "OPENVPN_MSI_NAME" `
+            $Constants
 
+        $ExpectedHash = Read-Constant `
+            "OPENVPN_MSI_SHA256" `
+            $Constants
+
+        $ExpectedSize = [int64](
+            Read-Constant `
+                "OPENVPN_MSI_SIZE" `
+                $Constants
+        )
+
+        $Version = Read-Constant `
+            "OPENVPN_VERSION" `
+            $Constants
     }
     elseif (Test-Path -LiteralPath $SecurityManifest -PathType Leaf) {
 
-        $manifestText = Get-Content -LiteralPath $SecurityManifest -Raw -Encoding UTF8
+        $manifestText = Get-Content `
+            -LiteralPath $SecurityManifest `
+            -Raw `
+            -Encoding UTF8
+
         $manifest = $manifestText | ConvertFrom-Json
 
         $artifact = $manifest.artifacts |
@@ -196,17 +243,23 @@ try {
             throw "OpenVPN MSI entry not found in security manifest"
         }
 
-        $MsiName = [IO.Path]::GetFileName([string]$artifact.local_path)
+        $MsiName = [IO.Path]::GetFileName(
+            [string]$artifact.local_path
+        )
+
         $ExpectedHash = [string]$artifact.expected_sha256
         $ExpectedSize = [int64]$artifact.file_size_bytes
         $Version = [string]$artifact.version
-
     }
     else {
         throw "OpenVPN security metadata not found"
     }
 
-    $Msi = Join-Path $OpenVpnDir $MsiName
+
+    $Msi = Join-Path `
+        $OpenVpnDir `
+        $MsiName
+
 
     if (-not (Test-Path -LiteralPath $Msi -PathType Leaf)) {
 
@@ -219,17 +272,24 @@ try {
         exit 1
     }
 
+
     Write-Status `
         "verifying" `
         "Verifying local OpenVPN MSI..." `
         30 `
         "VERIFYING"
 
-    $actualSize = (Get-Item -LiteralPath $Msi).Length
+
+    $actualSize = (
+        Get-Item `
+            -LiteralPath $Msi
+    ).Length
+
 
     if ($actualSize -ne $ExpectedSize) {
         throw "OpenVPN MSI size verification failed"
     }
+
 
     $ActualHash = (
         Get-FileHash `
@@ -237,9 +297,11 @@ try {
             -Algorithm SHA256
     ).Hash.ToLowerInvariant()
 
+
     if ($ActualHash -ne $ExpectedHash.ToLowerInvariant()) {
         throw "OpenVPN MSI SHA-256 verification failed"
     }
+
 
     if (-not (Test-Administrator)) {
 
@@ -248,6 +310,7 @@ try {
             "Requesting administrator privileges..." `
             15 `
             "UAC_REQUIRED"
+
 
         try {
 
@@ -263,6 +326,7 @@ try {
                 $StatusFile
             )
 
+
             $child = Start-Process `
                 -FilePath "powershell.exe" `
                 -ArgumentList $childArguments `
@@ -271,8 +335,8 @@ try {
                 -PassThru `
                 -ErrorAction Stop
 
-            exit $child.ExitCode
 
+            exit $child.ExitCode
         }
         catch {
 
@@ -286,11 +350,13 @@ try {
         }
     }
 
+
     Write-Status `
         "installing" `
         "Installing OpenVPN Windows driver..." `
         60 `
         "INSTALLING"
+
 
     $installArguments = @(
         "/i"
@@ -299,15 +365,18 @@ try {
         "/norestart"
     )
 
+
     $install = Start-Process `
         -FilePath "msiexec.exe" `
         -ArgumentList $installArguments `
         -Wait `
         -PassThru
 
+
     if ($install.ExitCode -ne 0 -and $install.ExitCode -ne 3010) {
         throw "OpenVPN driver installation failed with code $($install.ExitCode)"
     }
+
 
     Write-Status `
         "extracting" `
@@ -315,14 +384,24 @@ try {
         82 `
         "EXTRACTING"
 
-    $extractName = "OpenSight-Extract-" + [guid]::NewGuid().ToString("N")
-    $extract = Join-Path ([IO.Path]::GetTempPath()) $extractName
+
+    $extractName = (
+        "OpenSight-Extract-" +
+        [guid]::NewGuid().ToString("N")
+    )
+
+
+    $extract = Join-Path `
+        ([IO.Path]::GetTempPath()) `
+        $extractName
+
 
     New-Item `
         -ItemType Directory `
         -Path $extract `
         -Force |
         Out-Null
+
 
     try {
 
@@ -334,15 +413,18 @@ try {
             "/norestart"
         )
 
+
         $admin = Start-Process `
             -FilePath "msiexec.exe" `
             -ArgumentList $adminArguments `
             -Wait `
             -PassThru
 
+
         if ($admin.ExitCode -ne 0 -and $admin.ExitCode -ne 3010) {
             throw "OpenVPN MSI extraction failed with code $($admin.ExitCode)"
         }
+
 
         $bin = Get-ChildItem `
             -LiteralPath $extract `
@@ -351,9 +433,11 @@ try {
             -File |
             Select-Object -First 1
 
+
         if ($null -eq $bin) {
             throw "openvpn.exe was not found inside the OpenVPN MSI"
         }
+
 
         New-Item `
             -ItemType Directory `
@@ -361,13 +445,18 @@ try {
             -Force |
             Out-Null
 
+
         $runtimeFiles = Get-ChildItem `
             -LiteralPath $bin.Directory.FullName `
             -File
 
+
         foreach ($file in $runtimeFiles) {
 
-            $destination = Join-Path $OpenVpnDir $file.Name
+            $destination = Join-Path `
+                $OpenVpnDir `
+                $file.Name
+
 
             Copy-Item `
                 -LiteralPath $file.FullName `
@@ -375,11 +464,15 @@ try {
                 -Force
         }
 
-        $prodCode = Get-MsiProductCode $Msi
+
+        $prodCode = Get-MsiProductCode `
+            -MsiPath $Msi
+
 
         $manifestPath = Join-Path `
             $BundleRoot `
             "opensight-install-manifest.json"
+
 
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
 
@@ -390,31 +483,45 @@ try {
                     -Raw `
                     -Encoding UTF8
 
-                $installationManifest = $manifestContent | ConvertFrom-Json
+
+                $installationManifest =
+                    $manifestContent | ConvertFrom-Json
+
 
                 if ($null -ne $installationManifest.openvpn_driver_metadata) {
 
-                    $metadata = $installationManifest.openvpn_driver_metadata
+                    $metadata =
+                        $installationManifest.openvpn_driver_metadata
+
 
                     $metadata.installed_by_opensight = $true
 
-                    $metadata.install_timestamp = (
+                    $metadata.install_timestamp =
                         [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-                    )
 
-                    $metadata.install_path = $OpenVpnDir
-                    $metadata.version = $Version
-                    $metadata.expected_sha256 = $ExpectedHash
-                    $metadata.source_msi = $MsiName
+                    $metadata.install_path =
+                        $OpenVpnDir
+
+                    $metadata.version =
+                        $Version
+
+                    $metadata.expected_sha256 =
+                        $ExpectedHash
+
+                    $metadata.source_msi =
+                        $MsiName
+
 
                     if ($prodCode) {
-                        $metadata.msi_product_code = $prodCode
+                        $metadata.msi_product_code =
+                            $prodCode
                     }
 
-                    $updatedManifest = (
+
+                    $updatedManifest =
                         $installationManifest |
                         ConvertTo-Json -Depth 10
-                    )
+
 
                     Set-Content `
                         -LiteralPath $manifestPath `
@@ -424,16 +531,16 @@ try {
                 }
             }
             catch {
-                # Installation succeeded. Manifest update is optional.
+                # Manifest update is optional.
             }
         }
+
 
         Write-Status `
             "completed" `
             "OpenVPN runtime and driver are ready." `
             100 `
             "OK"
-
     }
     finally {
 
@@ -443,7 +550,6 @@ try {
             -Force `
             -ErrorAction SilentlyContinue
     }
-
 }
 catch {
 
@@ -455,5 +561,6 @@ catch {
 
     exit 1
 }
+
 
 exit 0
