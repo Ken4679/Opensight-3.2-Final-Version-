@@ -62,8 +62,62 @@ jobs:
 
       - name: Pip Dependency Vulnerability Audit
         run: |
-          pip-audit -r requirements.lock --format json --output dependency-report.json
+          set +e
+
+          echo "========================================"
+          echo "Running pip-audit JSON report"
+          echo "========================================"
+
+          pip-audit \
+            -r requirements.lock \
+            --format json \
+            --output dependency-report.json
+
+          AUDIT_EXIT_CODE=$?
+
+          echo ""
+          echo "========================================"
+          echo "PIP-AUDIT JSON REPORT"
+          echo "========================================"
+
+          if [ -f dependency-report.json ]; then
+            cat dependency-report.json
+          else
+            echo "dependency-report.json was not created."
+          fi
+
+          echo ""
+          echo "========================================"
+          echo "PIP-AUDIT HUMAN-READABLE REPORT"
+          echo "========================================"
+
           pip-audit -r requirements.lock
+
+          HUMAN_EXIT_CODE=$?
+
+          echo ""
+          echo "========================================"
+          echo "PIP-AUDIT SUMMARY"
+          echo "========================================"
+          echo "JSON audit exit code: $AUDIT_EXIT_CODE"
+          echo "Human-readable audit exit code: $HUMAN_EXIT_CODE"
+          echo "========================================"
+
+          if [ "$AUDIT_EXIT_CODE" -ne 0 ]; then
+            echo ""
+            echo "ERROR: pip-audit found known vulnerabilities."
+            echo "The CI security gate will fail as intended."
+            exit "$AUDIT_EXIT_CODE"
+          fi
+
+          if [ "$HUMAN_EXIT_CODE" -ne 0 ]; then
+            echo ""
+            echo "ERROR: pip-audit human-readable audit failed."
+            exit "$HUMAN_EXIT_CODE"
+          fi
+
+          echo ""
+          echo "SUCCESS: pip-audit found no known vulnerabilities."
 
       - name: Frontend TypeScript Typecheck
         run: |
