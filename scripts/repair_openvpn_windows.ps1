@@ -7,13 +7,11 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BundleRoot = Split-Path -Parent $ScriptDir
 $OpenVpnDir = Join-Path $BundleRoot "openvpn"
-
 $UacCancelledCode = 1223
 
 if ([string]::IsNullOrWhiteSpace($StatusFile)) {
     $StatusFile = Join-Path $BundleRoot "data\repair_status.json"
 }
-
 
 function Write-Status {
     param(
@@ -30,25 +28,21 @@ function Write-Status {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
 
-        $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-
         $status = @{
-            state      = $State
-            message    = $Message
+            state = $State
+            message = $Message
             percentage = $Percentage
-            code       = $Code
-            updated_at = $timestamp
+            code = $Code
+            updated_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         }
 
-        $status |
-            ConvertTo-Json -Compress |
-            Set-Content -LiteralPath $StatusFile -Encoding UTF8 -Force
+        $json = $status | ConvertTo-Json -Compress
+        Set-Content -LiteralPath $StatusFile -Value $json -Encoding UTF8 -Force
     }
     catch {
-        # Status reporting must never stop the repair process.
+        # Status reporting is best effort.
     }
 }
-
 
 function Read-Constant {
     param(
@@ -57,82 +51,71 @@ function Read-Constant {
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "constants.py 不存在: $Path"
+        throw "constants.py not found: $Path"
     }
 
-    $content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $lines = Get-Content -LiteralPath $Path -Encoding UTF8
 
-    # First try the normal Python double-quoted form:
-    #
-    # NAME: Final[str] = "value"
-    #
-    # This regex intentionally contains no escaped double quotes.
-    $patternDouble = '(?m)^\s*' +
-        [regex]::Escape($Name) +
-        '\s*:\s*Final\[[^\]]+\]\s*=\s*"(?<value>[^"]+)"'
+    foreach ($line in $lines) {
+        $trimmed = $line.Trim()
 
-    $match = [regex]::Match(
-        $content,
-        $patternDouble
-    )
+        if (-not $trimmed.StartsWith($Name)) {
+            continue
+        }
 
-    if ($match.Success) {
-        return $match.Groups["value"].Value
+        if (-not $trimmed.Contains("=")) {
+            continue
+        }
+
+        $parts = $trimmed.Split("=", 2)
+
+        if ($parts.Count -ne 2) {
+            continue
+        }
+
+        $value = $parts[1].Trim()
+
+        if ($value.Length -ge 2) {
+            $first = $value.Substring(0, 1)
+            $last = $value.Substring($value.Length - 1, 1)
+
+            if (($first -eq '"') -and ($last -eq '"')) {
+                return $value.Substring(1, $value.Length - 2)
+            }
+
+            if (($first -eq "'") -and ($last -eq "'")) {
+                return $value.Substring(1, $value.Length - 2)
+            }
+        }
+
+        return $value
     }
 
-
-    # Also support Python single-quoted form:
-    #
-    # NAME: Final[str] = 'value'
-    #
-    $patternSingle = '(?m)^\s*' +
-        [regex]::Escape($Name) +
-        "\s*:\s*Final\[[^\]]+\]\s*=\s*'(?<value>[^']+)'"
-
-    $match = [regex]::Match(
-        $content,
-        $patternSingle
-    )
-
-    if ($match.Success) {
-        return $match.Groups["value"].Value
-    }
-
-
-    throw "无法从 constants.py 读取 $Name"
+    throw "Unable to read $Name from constants.py"
 }
-
 
 function Test-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-
-    $principal = New-Object `
-        Security.Principal.WindowsPrincipal(
-            $identity
-        )
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 
     return $principal.IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )
 }
 
-
 function Get-MsiProductCode {
     param(
         [string]$MsiPath
     )
 
-    $productCode = $null
-
     try {
-        $windowsInstaller = New-Object `
-            -ComObject WindowsInstaller.Installer
+        $installer = New-Object -ComObject WindowsInstaller.Installer
 
-        $database = $windowsInstaller.GetType().InvokeMember(
+        $database = $installer.GetType().InvokeMember(
             "OpenDatabase",
             "InvokeMethod",
             $null,
-            $windowsInstaller,
+            $installer,
             @($MsiPath, 0)
         )
 
@@ -141,9 +124,7 @@ function Get-MsiProductCode {
             "InvokeMethod",
             $null,
             $database,
-            @(
-                "SELECT Value FROM Property WHERE Property = 'ProductCode'"
-            )
+            @("SELECT Value FROM Property WHERE Property = 'ProductCode'")
         )
 
         $view.GetType().InvokeMember(
@@ -163,7 +144,7 @@ function Get-MsiProductCode {
         )
 
         if ($record) {
-            $productCode = $record.GetType().InvokeMember(
+            return $record.GetType().InvokeMember(
                 "StringData",
                 "GetProperty",
                 $null,
@@ -173,169 +154,76 @@ function Get-MsiProductCode {
         }
     }
     catch {
-        $productCode = $null
+        return $null
     }
 
-    return $productCode
+    return $null
 }
 
+Write-Status "starting" "Checking local repair files..." 5 "OK"
 
-Write-Status `
-    -State "starting" `
-    -Message "正在检查本地修复文件..." `
-    -Percentage 5 `
-    -Code "OK"
-
-
-$Constants = Join-Path `
-    $BundleRoot `
-    "src\opensight\core\constants.py"
-
-$SecurityManifest = Join-Path `
-    $BundleRoot `
-    "SECURITY-MANIFEST.json"
-
+$Constants = Join-Path $BundleRoot "src\opensight\core\constants.py"
+$SecurityManifest = Join-Path $BundleRoot "SECURITY-MANIFEST.json"
 
 $MsiName = $null
 $ExpectedHash = $null
 $ExpectedSize = $null
 $Version = $null
 
-
 try {
-
-    # ================================================================
-    # Read trusted OpenVPN metadata
-    # ================================================================
-
     if (Test-Path -LiteralPath $Constants -PathType Leaf) {
-
-        $MsiName = Read-Constant `
-            -Name "OPENVPN_MSI_NAME" `
-            -Path $Constants
-
-        $ExpectedHash = Read-Constant `
-            -Name "OPENVPN_MSI_SHA256" `
-            -Path $Constants
-
-        $ExpectedSize = [int64](
-            Read-Constant `
-                -Name "OPENVPN_MSI_SIZE" `
-                -Path $Constants
-        )
-
-        $Version = Read-Constant `
-            -Name "OPENVPN_VERSION" `
-            -Path $Constants
+        $MsiName = Read-Constant "OPENVPN_MSI_NAME" $Constants
+        $ExpectedHash = Read-Constant "OPENVPN_MSI_SHA256" $Constants
+        $ExpectedSize = [int64](Read-Constant "OPENVPN_MSI_SIZE" $Constants)
+        $Version = Read-Constant "OPENVPN_VERSION" $Constants
     }
     elseif (Test-Path -LiteralPath $SecurityManifest -PathType Leaf) {
-
-        $manifest = Get-Content `
-            -LiteralPath $SecurityManifest `
-            -Raw `
-            -Encoding UTF8 |
-            ConvertFrom-Json
+        $manifestJson = Get-Content -LiteralPath $SecurityManifest -Raw -Encoding UTF8
+        $manifest = $manifestJson | ConvertFrom-Json
 
         $artifact = $manifest.artifacts |
-            Where-Object {
-                $_.artifact_name -like "OpenVPN-*.msi"
-            } |
+            Where-Object { $_.artifact_name -like "OpenVPN-*.msi" } |
             Select-Object -First 1
 
         if (-not $artifact) {
-            throw "安全清单中未找到 OpenVPN 安装包"
+            throw "OpenVPN MSI entry not found in SECURITY-MANIFEST.json"
         }
 
-        $MsiName = [IO.Path]::GetFileName(
-            [string]$artifact.local_path
-        )
-
+        $MsiName = [IO.Path]::GetFileName([string]$artifact.local_path)
         $ExpectedHash = [string]$artifact.expected_sha256
-
-        $ExpectedSize = [int64](
-            $artifact.file_size_bytes
-        )
-
+        $ExpectedSize = [int64]$artifact.file_size_bytes
         $Version = [string]$artifact.version
     }
     else {
-        throw "找不到 OpenVPN 安全校验信息"
+        throw "OpenVPN security metadata not found"
     }
 
-
-    # ================================================================
-    # Locate local MSI
-    # ================================================================
-
-    $Msi = Join-Path `
-        $OpenVpnDir `
-        $MsiName
-
+    $Msi = Join-Path $OpenVpnDir $MsiName
 
     if (-not (Test-Path -LiteralPath $Msi -PathType Leaf)) {
-
-        Write-Status `
-            -State "failed" `
-            -Message "本地 OpenVPN 安装包不存在，已停止修复；不会从网络下载文件。" `
-            -Percentage 0 `
-            -Code "LOCAL_MSI_MISSING"
-
+        Write-Status "failed" "Local OpenVPN MSI is missing. No network download will be attempted." 0 "LOCAL_MSI_MISSING"
         exit 1
     }
 
+    Write-Status "verifying" "Verifying local OpenVPN MSI..." 30 "VERIFYING"
 
-    # ================================================================
-    # Verify MSI size
-    # ================================================================
-
-    Write-Status `
-        -State "verifying" `
-        -Message "正在校验本地 OpenVPN 安装包..." `
-        -Percentage 30 `
-        -Code "VERIFYING"
-
-
-    $actualSize = (
-        Get-Item -LiteralPath $Msi
-    ).Length
-
+    $actualSize = (Get-Item -LiteralPath $Msi).Length
 
     if ($actualSize -ne $ExpectedSize) {
-        throw "本地安装包大小校验失败"
+        throw "OpenVPN MSI size verification failed"
     }
 
+    $ActualHash = (Get-FileHash -LiteralPath $Msi -Algorithm SHA256).Hash.ToLowerInvariant()
+    $ExpectedHashNormalized = $ExpectedHash.ToLowerInvariant()
 
-    # ================================================================
-    # Verify MSI SHA-256
-    # ================================================================
-
-    $ActualHash = (
-        Get-FileHash `
-            -LiteralPath $Msi `
-            -Algorithm SHA256
-    ).Hash.ToLowerInvariant()
-
-
-    if ($ActualHash -ne $ExpectedHash.ToLowerInvariant()) {
-        throw "本地安装包 SHA-256 校验失败"
+    if ($ActualHash -ne $ExpectedHashNormalized) {
+        throw "OpenVPN MSI SHA-256 verification failed"
     }
-
-
-    # ================================================================
-    # Check administrator privileges
-    # ================================================================
 
     if (-not (Test-Administrator)) {
-
-        Write-Status `
-            -State "elevating" `
-            -Message "正在申请管理员权限，请在 Windows 提示框中点击“是”。" `
-            -Percentage 15 `
-            -Code "UAC_REQUIRED"
-
+        Write-Status "elevating" "Requesting administrator privileges..." 15 "UAC_REQUIRED"
 
         try {
-
             $childArguments = @(
                 "-NoProfile"
                 "-WindowStyle"
@@ -348,7 +236,6 @@ try {
                 $StatusFile
             )
 
-
             $child = Start-Process `
                 -FilePath "powershell.exe" `
                 -ArgumentList $childArguments `
@@ -357,32 +244,15 @@ try {
                 -PassThru `
                 -ErrorAction Stop
 
-
             exit $child.ExitCode
         }
         catch {
-
-            Write-Status `
-                -State "failed" `
-                -Message "用户取消了管理员授权，驱动没有安装。" `
-                -Percentage 0 `
-                -Code "UAC_CANCELLED"
-
+            Write-Status "failed" "Administrator authorization was cancelled." 0 "UAC_CANCELLED"
             exit $UacCancelledCode
         }
     }
 
-
-    # ================================================================
-    # Install OpenVPN
-    # ================================================================
-
-    Write-Status `
-        -State "installing" `
-        -Message "正在使用本地安装包修复 Windows 虚拟网卡驱动..." `
-        -Percentage 60 `
-        -Code "INSTALLING"
-
+    Write-Status "installing" "Installing OpenVPN Windows driver..." 60 "INSTALLING"
 
     $installArguments = @(
         "/i"
@@ -391,50 +261,25 @@ try {
         "/norestart"
     )
 
-
     $install = Start-Process `
         -FilePath "msiexec.exe" `
         -ArgumentList $installArguments `
         -Wait `
         -PassThru
 
-
     if ($install.ExitCode -notin @(0, 3010)) {
-        throw "Windows 驱动安装失败，错误代码：$($install.ExitCode)"
+        throw "OpenVPN driver installation failed with code $($install.ExitCode)"
     }
 
-
-    # ================================================================
-    # Extract OpenVPN runtime
-    # ================================================================
-
-    Write-Status `
-        -State "extracting" `
-        -Message "正在整理内置 OpenVPN 运行文件..." `
-        -Percentage 82 `
-        -Code "EXTRACTING"
-
-
-    $extractName = (
-        "OpenSight-Extract-" +
-        [guid]::NewGuid().ToString("N")
-    )
-
+    Write-Status "extracting" "Extracting OpenVPN runtime files..." 82 "EXTRACTING"
 
     $extract = Join-Path `
         ([IO.Path]::GetTempPath()) `
-        $extractName
+        ("OpenSight-Extract-" + [guid]::NewGuid().ToString("N"))
 
-
-    New-Item `
-        -ItemType Directory `
-        -Path $extract `
-        -Force |
-        Out-Null
-
+    New-Item -ItemType Directory -Path $extract -Force | Out-Null
 
     try {
-
         $adminArguments = @(
             "/a"
             $Msi
@@ -443,22 +288,15 @@ try {
             "/norestart"
         )
 
-
         $admin = Start-Process `
             -FilePath "msiexec.exe" `
             -ArgumentList $adminArguments `
             -Wait `
             -PassThru
 
-
         if ($admin.ExitCode -notin @(0, 3010)) {
-            throw "无法读取本地 OpenVPN 安装包，错误代码：$($admin.ExitCode)"
+            throw "OpenVPN MSI administrative extraction failed with code $($admin.ExitCode)"
         }
-
-
-        # ------------------------------------------------------------
-        # Find openvpn.exe
-        # ------------------------------------------------------------
 
         $bin = Get-ChildItem `
             -LiteralPath $extract `
@@ -467,15 +305,9 @@ try {
             -File |
             Select-Object -First 1
 
-
         if (-not $bin) {
-            throw "本地安装包中未找到 openvpn.exe"
+            throw "openvpn.exe was not found inside the OpenVPN MSI"
         }
-
-
-        # ------------------------------------------------------------
-        # Copy runtime files
-        # ------------------------------------------------------------
 
         New-Item `
             -ItemType Directory `
@@ -483,114 +315,62 @@ try {
             -Force |
             Out-Null
 
-
-        Get-ChildItem `
+        $runtimeFiles = Get-ChildItem `
             -LiteralPath $bin.Directory.FullName `
-            -File |
-            ForEach-Object {
+            -File
 
-                $target = Join-Path `
-                    $OpenVpnDir `
-                    $_.Name
+        foreach ($file in $runtimeFiles) {
+            $target = Join-Path $OpenVpnDir $file.Name
+            Copy-Item `
+                -LiteralPath $file.FullName `
+                -Destination $target `
+                -Force
+        }
 
+        $prodCode = Get-MsiProductCode -MsiPath $Msi
 
-                Copy-Item `
-                    -LiteralPath $_.FullName `
-                    -Destination $target `
-                    -Force
-            }
-
-
-        # ------------------------------------------------------------
-        # Read MSI ProductCode
-        # ------------------------------------------------------------
-
-        $prodCode = Get-MsiProductCode `
-            -MsiPath $Msi
-
-
-        # ------------------------------------------------------------
-        # Update installation manifest
-        # ------------------------------------------------------------
-
-        $manifestPath = Join-Path `
-            $BundleRoot `
-            "opensight-install-manifest.json"
-
+        $manifestPath = Join-Path $BundleRoot "opensight-install-manifest.json"
 
         if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
-
             try {
-
-                $installationManifest = Get-Content `
+                $installationManifestJson = Get-Content `
                     -LiteralPath $manifestPath `
                     -Raw `
-                    -Encoding UTF8 |
-                    ConvertFrom-Json
+                    -Encoding UTF8
 
+                $installationManifest = $installationManifestJson | ConvertFrom-Json
 
                 if ($installationManifest.openvpn_driver_metadata) {
-
-                    $metadata =
-                        $installationManifest.openvpn_driver_metadata
-
+                    $metadata = $installationManifest.openvpn_driver_metadata
 
                     $metadata.installed_by_opensight = $true
-
-
-                    $metadata.install_timestamp =
-                        [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-
-
-                    $metadata.install_path =
-                        $OpenVpnDir
-
-
-                    $metadata.version =
-                        $Version
-
-
-                    $metadata.expected_sha256 =
-                        $ExpectedHash
-
-
-                    $metadata.source_msi =
-                        $MsiName
-
+                    $metadata.install_timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                    $metadata.install_path = $OpenVpnDir
+                    $metadata.version = $Version
+                    $metadata.expected_sha256 = $ExpectedHash
+                    $metadata.source_msi = $MsiName
 
                     if ($prodCode) {
-                        $metadata.msi_product_code =
-                            $prodCode
+                        $metadata.msi_product_code = $prodCode
                     }
 
+                    $updatedManifest = $installationManifest | ConvertTo-Json -Depth 10
 
-                    $installationManifest |
-                        ConvertTo-Json -Depth 10 |
-                        Set-Content `
-                            -LiteralPath $manifestPath `
-                            -Encoding UTF8 `
-                            -Force
+                    Set-Content `
+                        -LiteralPath $manifestPath `
+                        -Value $updatedManifest `
+                        -Encoding UTF8 `
+                        -Force
                 }
             }
             catch {
-                # Installation itself succeeded. Manifest metadata is
-                # auxiliary and must not invalidate the repair.
+                # Installation succeeded; manifest update is optional.
             }
         }
 
-
-        # ============================================================
-        # Final success
-        # ============================================================
-
-        Write-Status `
-            -State "completed" `
-            -Message "OpenVPN $Version 驱动与运行文件已就绪。" `
-            -Percentage 100 `
-            -Code "OK"
+        Write-Status "completed" "OpenVPN $Version runtime and driver are ready." 100 "OK"
     }
     finally {
-
         Remove-Item `
             -LiteralPath $extract `
             -Recurse `
@@ -599,15 +379,8 @@ try {
     }
 }
 catch {
-
-    Write-Status `
-        -State "failed" `
-        -Message $_.Exception.Message `
-        -Percentage 0 `
-        -Code "ERROR"
-
+    Write-Status "failed" $_.Exception.Message 0 "ERROR"
     exit 1
 }
-
 
 exit 0
