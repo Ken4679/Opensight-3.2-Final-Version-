@@ -18,50 +18,17 @@ $UacCancelledCode = 1223
 
 
 function Test-Administrator {
+
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+
+    $principal = New-Object `
+        Security.Principal.WindowsPrincipal(
+            $identity
+        )
 
     return $principal.IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )
-}
-
-
-function Start-ElevatedProcess {
-    $arguments = @(
-        "-NoProfile"
-        "-WindowStyle"
-        "Hidden"
-        "-ExecutionPolicy"
-        "Bypass"
-        "-File"
-        $PSCommandPath
-        "-SingBox"
-        $SingBox
-        "-Config"
-        $Config
-        "-PidFile"
-        $PidFile
-        "-StopFile"
-        $StopFile
-    )
-
-    $startParameters = @{
-        FilePath = "powershell.exe"
-        ArgumentList = $arguments
-        Verb = "RunAs"
-        Wait = $true
-        PassThru = $true
-        ErrorAction = "Stop"
-    }
-
-    try {
-        $child = Start-Process @startParameters
-        return $child.ExitCode
-    }
-    catch {
-        return $UacCancelledCode
-    }
 }
 
 
@@ -83,9 +50,8 @@ function Ensure-ParentDirectory {
 }
 
 
-function Stop-ChildProcess {
+function Stop-ProcessSafely {
     param(
-        [Parameter(Mandatory = $false)]
         [System.Diagnostics.Process]$Process
     )
 
@@ -113,18 +79,49 @@ function Stop-ChildProcess {
 
 if (-not (Test-Administrator)) {
 
-    $elevatedExitCode = Start-ElevatedProcess
+    try {
 
-    if ($elevatedExitCode -eq $UacCancelledCode) {
-        Write-Error "Administrator authorization was cancelled."
+        $childArguments = @(
+            "-NoProfile"
+            "-WindowStyle"
+            "Hidden"
+            "-ExecutionPolicy"
+            "Bypass"
+            "-File"
+            $PSCommandPath
+            "-SingBox"
+            $SingBox
+            "-Config"
+            $Config
+            "-PidFile"
+            $PidFile
+            "-StopFile"
+            $StopFile
+        )
+
+
+        $child = Start-Process `
+            -FilePath "powershell.exe" `
+            -ArgumentList $childArguments `
+            -Verb RunAs `
+            -Wait `
+            -PassThru `
+            -ErrorAction Stop
+
+
+        exit $child.ExitCode
     }
+    catch {
 
-    exit $elevatedExitCode
+        Write-Error "Administrator authorization was cancelled."
+
+        exit $UacCancelledCode
+    }
 }
 
 
 # ================================================================
-# Validate executable
+# Validate input files
 # ================================================================
 
 if (-not (Test-Path -LiteralPath $SingBox -PathType Leaf)) {
@@ -133,21 +130,10 @@ if (-not (Test-Path -LiteralPath $SingBox -PathType Leaf)) {
 }
 
 
-# ================================================================
-# Validate configuration
-# ================================================================
-
 if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) {
     Write-Error "sing-box configuration not found: $Config"
     exit 1
 }
-
-
-# ================================================================
-# Validate parent directories
-# ================================================================
-
-Ensure-ParentDirectory -Path $PidFile
 
 
 $workingDirectory = Split-Path -Parent $Config
@@ -155,6 +141,9 @@ $workingDirectory = Split-Path -Parent $Config
 if ([string]::IsNullOrWhiteSpace($workingDirectory)) {
     $workingDirectory = (Get-Location).Path
 }
+
+
+Ensure-ParentDirectory -Path $PidFile
 
 
 # ================================================================
@@ -185,20 +174,12 @@ try {
     $proc = Start-Process @startParameters
 
 
-    # ------------------------------------------------------------
-    # Write process ID
-    # ------------------------------------------------------------
-
     Set-Content `
         -LiteralPath $PidFile `
         -Value ([string]$proc.Id) `
         -Encoding ascii `
         -Force
 
-
-    # ============================================================
-    # Monitor sing-box
-    # ============================================================
 
     while ($true) {
 
@@ -209,20 +190,23 @@ try {
 
         if (Test-Path -LiteralPath $StopFile) {
 
-            Stop-ChildProcess -Process $proc
+            Stop-ProcessSafely `
+                -Process $proc
 
             exit 0
         }
 
 
-        Start-Sleep -Milliseconds 300
+        Start-Sleep `
+            -Milliseconds 300
     }
 }
 catch {
 
     Write-Error $_.Exception.Message
 
-    Stop-ChildProcess -Process $proc
+    Stop-ProcessSafely `
+        -Process $proc
 
     exit 1
 }
