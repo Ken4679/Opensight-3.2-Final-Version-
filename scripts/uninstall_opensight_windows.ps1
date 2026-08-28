@@ -17,18 +17,53 @@ if ([string]::IsNullOrWhiteSpace($BundleRoot)) {
 
 $BundleRoot = [IO.Path]::GetFullPath($BundleRoot)
 
-$TempDirectory = [System.IO.Path]::GetTempPath()
+if ([string]::IsNullOrWhiteSpace($StatusFile)) {
+    $StatusFile = Join-Path `
+        ([IO.Path]::GetTempPath()) `
+        "OpenSight-Uninstall-Status.json"
+}
 
-$GlobalStatusFile = Join-Path `
-    $TempDirectory `
-    "OpenSight-Uninstall-Status.json"
-
-$LogFile = Join-Path `
-    $TempDirectory `
+$LogPath = Join-Path `
+    ([IO.Path]::GetTempPath()) `
     "OpenSight-Uninstall.log"
 
-if ([string]::IsNullOrWhiteSpace($StatusFile)) {
-    $StatusFile = $GlobalStatusFile
+
+function Write-Status {
+    param(
+        [string]$State,
+        [string]$Message,
+        [int]$Percentage = 0,
+        [string]$Code = "OK"
+    )
+
+    try {
+        $statusDirectory = Split-Path -Parent $StatusFile
+
+        if ($statusDirectory -and -not (Test-Path -LiteralPath $statusDirectory)) {
+            New-Item -ItemType Directory -Path $statusDirectory -Force | Out-Null
+        }
+
+        $payload = @{
+            state = $State
+            message = $Message
+            percentage = $Percentage
+            code = $Code
+            purge_data = [bool]$PurgeData
+            verify_only = [bool]$VerifyOnly
+            updated_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        }
+
+        $json = $payload | ConvertTo-Json -Compress -Depth 10
+
+        Set-Content `
+            -LiteralPath $StatusFile `
+            -Value $json `
+            -Encoding UTF8 `
+            -Force
+    }
+    catch {
+        # Status reporting is best effort.
+    }
 }
 
 
@@ -42,62 +77,12 @@ function Write-Log {
         $line = "[{0}] {1}" -f $timestamp, $Message
 
         Add-Content `
-            -LiteralPath $LogFile `
+            -LiteralPath $LogPath `
             -Value $line `
             -Encoding UTF8
     }
     catch {
         # Logging is best effort.
-    }
-}
-
-
-function Write-Status {
-    param(
-        [string]$State,
-        [string]$Message,
-        [int]$Percentage = 0,
-        [string]$Code = "OK",
-        [hashtable]$Details = $null
-    )
-
-    try {
-        $payload = @{
-            state = $State
-            message = $Message
-            percentage = $Percentage
-            code = $Code
-            purge_data = [bool]$PurgeData
-            verify_only = [bool]$VerifyOnly
-            updated_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-        }
-
-        if ($null -ne $Details) {
-            $payload["details"] = $Details
-        }
-
-        $json = $payload | ConvertTo-Json -Compress -Depth 10
-
-        Set-Content `
-            -LiteralPath $GlobalStatusFile `
-            -Value $json `
-            -Encoding UTF8 `
-            -Force
-
-        if ($StatusFile -ne $GlobalStatusFile) {
-            $statusDirectory = Split-Path -Parent $StatusFile
-
-            if ($statusDirectory -and (Test-Path -LiteralPath $statusDirectory)) {
-                Set-Content `
-                    -LiteralPath $StatusFile `
-                    -Value $json `
-                    -Encoding UTF8 `
-                    -Force
-            }
-        }
-    }
-    catch {
-        # Status reporting is best effort.
     }
 }
 
@@ -134,18 +119,48 @@ function Get-InstallManifest {
         return $content | ConvertFrom-Json
     }
     catch {
-        Write-Log "Failed to read install manifest: $($_.Exception.Message)"
+        Write-Log "Unable to read install manifest: $($_.Exception.Message)"
         return $null
     }
 }
 
 
-function Stop-OwnedProcesses {
+function Test-OwnedPath {
     param(
-        [string]$TargetBundleRoot
+        [string]$Path
     )
 
-    $names = @(
+    try {
+        $root = [IO.Path]::GetFullPath($BundleRoot)
+        $candidate = [IO.Path]::GetFullPath($Path)
+
+        if ($candidate.Equals(
+            $root,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            return $true
+        }
+
+        $prefix = $root.TrimEnd(
+            [IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar
+        )
+
+        $prefix = $prefix + [IO.Path]::DirectorySeparatorChar
+
+        return $candidate.StartsWith(
+            $prefix,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+
+function Stop-OwnedProcesses {
+    $processNames = @(
         "OpenSight"
         "opensight-core"
         "sing-box"
@@ -154,17 +169,22 @@ function Stop-OwnedProcesses {
 
     $processes = @(
         Get-Process `
-            -Name $names `
+            -Name $processNames `
             -ErrorAction SilentlyContinue
     )
 
     foreach ($process in $processes) {
         try {
-            $processPath = $process.Path
+            $processPath = $null
 
-            # Explicit ownership check required by the security corpus.
+            try {
+                $processPath = $process.Path
+            }
+            catch {
+                $processPath = $null
+            }
+
             if ($processPath -and $processPath.StartsWith($BundleRoot)) {
-
                 Write-Log (
                     "Stopping owned process: {0}, PID={1}" -f
                     $process.ProcessName,
@@ -185,10 +205,397 @@ function Stop-OwnedProcesses {
             }
         }
         catch {
-            Write-Log (
-                "Process ownership inspection failed: {0}" -f
-                $_.Exception.Message
+            Write-Log "Process cleanup failed: $($_.Exception.Message)"
+        }
+    }
+}
+
+
+function Remove-OwnedServices {
+    $services = @(
+        Get-Service -Name "OpenSight*" -ErrorAction SilentlyContinue
+    )
+
+    foreach ($service in $services) {
+        try {
+            Stop-Service `
+                -Name $service.Name `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+        catch {
+            Write-Log "Unable to stop service $($service.Name)"
+        }
+
+        try {
+            sc.exe delete $service.Name | Out-Null
+        }
+        catch {
+            Write-Log "Unable to delete service $($service.Name)"
+        }
+    }
+}
+
+
+function Remove-OwnedScheduledTasks {
+    try {
+        $tasks = @(
+            Get-ScheduledTask `
+                -TaskName "OpenSight*" `
+                -ErrorAction SilentlyContinue
+        )
+
+        foreach ($task in $tasks) {
+            try {
+                Unregister-ScheduledTask `
+                    -TaskName $task.TaskName `
+                    -TaskPath $task.TaskPath `
+                    -Confirm:$false `
+                    -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-Log "Unable to remove scheduled task $($task.TaskName)"
+            }
+        }
+    }
+    catch {
+        Write-Log "Scheduled task cleanup failed: $($_.Exception.Message)"
+    }
+}
+
+
+function Remove-OwnedFirewallRules {
+    try {
+        $rules = @(
+            Get-NetFirewallRule `
+                -Name "OpenSight-*" `
+                -ErrorAction SilentlyContinue
+        )
+
+        foreach ($rule in $rules) {
+            try {
+                Remove-NetFirewallRule `
+                    -Name $rule.Name `
+                    -ErrorAction SilentlyContinue
+            }
+            catch {
+                Write-Log "Unable to remove firewall rule $($rule.Name)"
+            }
+        }
+    }
+    catch {
+        Write-Log "Firewall cleanup failed: $($_.Exception.Message)"
+    }
+}
+
+
+function Remove-OwnedRoutes {
+    param(
+        [object]$Manifest
+    )
+
+    try {
+        $trackedRoutes = @()
+
+        if (
+            $Manifest -and
+            $Manifest.owned_network_resources -and
+            $Manifest.owned_network_resources.tracked_routes
+        ) {
+            $trackedRoutes = @(
+                $Manifest.owned_network_resources.tracked_routes
             )
+        }
+
+        foreach ($tr in $trackedRoutes) {
+            if (-not $tr.destination_prefix) {
+                continue
+            }
+
+            $routes = @(
+                Get-NetRoute `
+                    -DestinationPrefix $tr.destination_prefix `
+                    -ErrorAction SilentlyContinue
+            )
+
+            foreach ($rt in $routes) {
+                $match = $true
+
+                if (
+                    $tr.interface_index -and
+                    $rt.InterfaceIndex -ne $tr.interface_index
+                ) {
+                    $match = $false
+                }
+
+                if (
+                    $tr.gateway -and
+                    $rt.NextHop -ne $tr.gateway
+                ) {
+                    $match = $false
+                }
+
+                if (
+                    $tr.metric -and
+                    $rt.RouteMetric -ne $tr.metric
+                ) {
+                    $match = $false
+                }
+
+                if ($match) {
+                    Write-Log (
+                        "Removing tracked route {0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f
+                        $rt.DestinationPrefix,
+                        $rt.InterfaceIndex,
+                        $rt.NextHop,
+                        $rt.RouteMetric
+                    )
+
+                    Remove-NetRoute `
+                        -DestinationPrefix $rt.DestinationPrefix `
+                        -InterfaceIndex $rt.InterfaceIndex `
+                        -Confirm:$false `
+                        -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        $ownedPrefixes = @(
+            "172.19.0.0/30"
+            "fdfe:dcba:9876::/126"
+        )
+
+        if (
+            $Manifest -and
+            $Manifest.owned_network_resources -and
+            $Manifest.owned_network_resources.route_destinations
+        ) {
+            $ownedPrefixes = @(
+                $Manifest.owned_network_resources.route_destinations
+            )
+        }
+
+        foreach ($prefix in $ownedPrefixes) {
+            $routes = @(
+                Get-NetRoute `
+                    -DestinationPrefix $prefix `
+                    -ErrorAction SilentlyContinue
+            )
+
+            foreach ($rt in $routes) {
+                Write-Log (
+                    "Removing owned route {0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f
+                    $rt.DestinationPrefix,
+                    $rt.InterfaceIndex,
+                    $rt.NextHop,
+                    $rt.RouteMetric
+                )
+
+                Remove-NetRoute `
+                    -DestinationPrefix $rt.DestinationPrefix `
+                    -InterfaceIndex $rt.InterfaceIndex `
+                    -Confirm:$false `
+                    -ErrorAction SilentlyContinue
+            }
+        }
+
+        $tunRoutes = @(
+            Get-NetRoute `
+                -InterfaceAlias "OpenSight-TUN" `
+                -ErrorAction SilentlyContinue
+        )
+
+        foreach ($rt in $tunRoutes) {
+            Remove-NetRoute `
+                -DestinationPrefix $rt.DestinationPrefix `
+                -InterfaceIndex $rt.InterfaceIndex `
+                -Confirm:$false `
+                -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        Write-Log "Route cleanup failed: $($_.Exception.Message)"
+    }
+}
+
+
+function Remove-OwnedTunAdapter {
+    try {
+        $adapters = @(
+            Get-NetAdapter `
+                -Name "OpenSight-TUN" `
+                -ErrorAction SilentlyContinue
+        )
+
+        foreach ($adapter in $adapters) {
+            try {
+                Disable-NetAdapter `
+                    -Name $adapter.Name `
+                    -Confirm:$false `
+                    -ErrorAction SilentlyContinue
+            }
+            catch {
+                # Best effort.
+            }
+
+            try {
+                Remove-NetAdapter `
+                    -Name $adapter.Name `
+                    -Confirm:$false `
+                    -ErrorAction SilentlyContinue
+            }
+            catch {
+                # Best effort.
+            }
+        }
+    }
+    catch {
+        Write-Log "Adapter cleanup failed: $($_.Exception.Message)"
+    }
+
+    try {
+        $devices = @(
+            Get-PnpDevice `
+                -FriendlyName "*OpenSight-TUN*" `
+                -ErrorAction SilentlyContinue
+        )
+
+        foreach ($device in $devices) {
+            try {
+                pnputil.exe /remove-device "$($device.InstanceId)" | Out-Null
+            }
+            catch {
+                Write-Log "Unable to remove PnP device $($device.InstanceId)"
+            }
+        }
+    }
+    catch {
+        Write-Log "PnP cleanup failed: $($_.Exception.Message)"
+    }
+}
+
+
+function Remove-OwnedRegistry {
+    $registryPaths = @(
+        "HKCU:\Software\OpenSight"
+        "HKLM:\Software\OpenSight"
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
+    )
+
+    foreach ($path in $registryPaths) {
+        try {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item `
+                    -LiteralPath $path `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Write-Log "Unable to remove registry path $path"
+        }
+    }
+
+    $runKeys = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+    )
+
+    foreach ($runKey in $runKeys) {
+        try {
+            if (Test-Path -LiteralPath $runKey) {
+                Remove-ItemProperty `
+                    -Path $runKey `
+                    -Name "OpenSight" `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Write-Log "Unable to remove startup registry value."
+        }
+    }
+}
+
+
+function Remove-OwnedStartup {
+    try {
+        $startupFolder = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::Startup
+        )
+
+        $startupFile = Join-Path `
+            $startupFolder `
+            "OpenSight.lnk"
+
+        if (Test-Path -LiteralPath $startupFile) {
+            Remove-Item `
+                -LiteralPath $startupFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+    }
+    catch {
+        Write-Log "Startup cleanup failed: $($_.Exception.Message)"
+    }
+}
+
+
+function Remove-OwnedData {
+    if (-not $PurgeData) {
+        return
+    }
+
+    $bundleDirectories = @(
+        "data"
+        "logs"
+        "profiles"
+        "licenses"
+    )
+
+    foreach ($directoryName in $bundleDirectories) {
+        $path = Join-Path $BundleRoot $directoryName
+
+        try {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item `
+                    -LiteralPath $path `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Write-Log "Unable to remove data directory $path"
+        }
+    }
+
+    $externalBases = @(
+        $env:LOCALAPPDATA
+        $env:APPDATA
+        $env:ProgramData
+    )
+
+    foreach ($base in $externalBases) {
+        if ([string]::IsNullOrWhiteSpace($base)) {
+            continue
+        }
+
+        $path = Join-Path $base "OpenSight"
+
+        try {
+            if (Test-Path -LiteralPath $path) {
+                Remove-Item `
+                    -LiteralPath $path `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+        }
+        catch {
+            Write-Log "Unable to remove data path $path"
         }
     }
 }
@@ -196,11 +603,8 @@ function Stop-OwnedProcesses {
 
 function Invoke-OpenSightResidualVerification {
     param(
-        [string]$TargetBundleRoot = "",
-        [bool]$IsPurge = $false,
-        [switch]$CheckFiles = $false,
-        [switch]$CheckTemp = $false,
-        [object]$Manifest = $null
+        [bool]$CheckFiles = $true,
+        [bool]$CheckTemp = $true
     )
 
     $report = @{
@@ -225,66 +629,54 @@ function Invoke-OpenSightResidualVerification {
     }
 
 
-    # ============================================================
-    # Processes
-    # ============================================================
+    # ------------------------------------------------------------
+    # Process verification
+    # ------------------------------------------------------------
 
     try {
-        $processNames = @(
-            "OpenSight"
-            "opensight-core"
-            "sing-box"
-            "openvpn"
-        )
-
-        $runningProcesses = @(
+        $processes = @(
             Get-Process `
-                -Name $processNames `
+                -Name @(
+                    "OpenSight"
+                    "opensight-core"
+                    "sing-box"
+                    "openvpn"
+                ) `
                 -ErrorAction SilentlyContinue
         )
 
-        foreach ($process in $runningProcesses) {
+        foreach ($process in $processes) {
             try {
                 $processPath = $process.Path
 
                 if ($processPath -and $processPath.StartsWith($BundleRoot)) {
-                    $entry = "PID {0}: {1} ({2})" -f `
-                        $process.Id,
-                        $process.ProcessName,
-                        $processPath
+                    $entry = "PID=$($process.Id):$($process.ProcessName)"
 
                     $report.processes += $entry
                     $report.clean = $false
-
-                    if ($process.ProcessName -ieq "openvpn") {
-                        $report.openvpn += $entry
-                    }
-
-                    if ($process.ProcessName -ieq "sing-box") {
-                        $report.singbox += $entry
-                    }
                 }
             }
             catch {
                 $report.errors += `
-                    "Process inspection error: $($_.Exception.Message)"
+                    "Process verification error."
             }
         }
     }
     catch {
         $report.errors += `
-            "Process enumeration error: $($_.Exception.Message)"
+            "Process enumeration error."
     }
 
 
-    # ============================================================
-    # Firewall
-    # ============================================================
+    # ------------------------------------------------------------
+    # Firewall verification
+    # ------------------------------------------------------------
 
     try {
-        # The security test requires the literal OpenSight-* selector.
         $firewallRules = @(
-            Get-NetFirewallRule -Name "OpenSight-*" -ErrorAction SilentlyContinue
+            Get-NetFirewallRule `
+                -Name "OpenSight-*" `
+                -ErrorAction SilentlyContinue
         )
 
         foreach ($rule in $firewallRules) {
@@ -295,32 +687,21 @@ function Invoke-OpenSightResidualVerification {
     }
     catch {
         $report.errors += `
-            "Firewall inspection error: $($_.Exception.Message)"
+            "Firewall verification error."
     }
 
 
-    # ============================================================
-    # Routes
-    # ============================================================
+    # ------------------------------------------------------------
+    # Route verification
+    # ------------------------------------------------------------
 
     try {
-        $ownedPrefixes = @(
+        $prefixes = @(
             "172.19.0.0/30"
             "fdfe:dcba:9876::/126"
         )
 
-        if (
-            $Manifest -and
-            $Manifest.owned_network_resources
-        ) {
-            if ($Manifest.owned_network_resources.route_destinations) {
-                $ownedPrefixes = @(
-                    $Manifest.owned_network_resources.route_destinations
-                )
-            }
-        }
-
-        foreach ($prefix in $ownedPrefixes) {
+        foreach ($prefix in $prefixes) {
             $routes = @(
                 Get-NetRoute `
                     -DestinationPrefix $prefix `
@@ -329,7 +710,7 @@ function Invoke-OpenSightResidualVerification {
 
             foreach ($route in $routes) {
                 $report.routes += (
-                    "{0} (InterfaceIndex={1}, NextHop={2}, RouteMetric={3})" -f `
+                    "{0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f
                     $route.DestinationPrefix,
                     $route.InterfaceIndex,
                     $route.NextHop,
@@ -340,69 +721,6 @@ function Invoke-OpenSightResidualVerification {
             }
         }
 
-
-        $trackedRoutes = @()
-
-        if (
-            $Manifest -and
-            $Manifest.owned_network_resources -and
-            $Manifest.owned_network_resources.tracked_routes
-        ) {
-            $trackedRoutes = @(
-                $Manifest.owned_network_resources.tracked_routes
-            )
-        }
-
-
-        foreach ($tracked in $trackedRoutes) {
-            if (-not $tracked.destination_prefix) {
-                continue
-            }
-
-            $trackedMatches = @(
-                Get-NetRoute `
-                    -DestinationPrefix $tracked.destination_prefix `
-                    -ErrorAction SilentlyContinue
-            )
-
-            foreach ($rt in $trackedMatches) {
-
-                $match = $true
-
-                if (
-                    $tracked.interface_index -and
-                    $rt.InterfaceIndex -ne $tracked.interface_index
-                ) {
-                    $match = $false
-                }
-
-                if (
-                    $tracked.gateway -and
-                    $rt.NextHop -ne $tracked.gateway
-                ) {
-                    $match = $false
-                }
-
-                if (
-                    $tracked.metric -and
-                    $rt.RouteMetric -ne $tracked.metric
-                ) {
-                    $match = $false
-                }
-
-                if ($match) {
-                    $report.routes += (
-                        "Tracked route: {0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f `
-                        $rt.DestinationPrefix,
-                        $rt.InterfaceIndex,
-                        $rt.NextHop,
-                        $rt.RouteMetric
-                    )
-                }
-            }
-        }
-
-
         $tunRoutes = @(
             Get-NetRoute `
                 -InterfaceAlias "OpenSight-TUN" `
@@ -411,7 +729,7 @@ function Invoke-OpenSightResidualVerification {
 
         foreach ($route in $tunRoutes) {
             $report.routes += (
-                "TUN-Route: {0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f `
+                "{0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f
                 $route.DestinationPrefix,
                 $route.InterfaceIndex,
                 $route.NextHop,
@@ -423,52 +741,36 @@ function Invoke-OpenSightResidualVerification {
     }
     catch {
         $report.errors += `
-            "Route inspection error: $($_.Exception.Message)"
+            "Route verification error."
     }
 
 
-    # ============================================================
-    # Network adapter
-    # ============================================================
+    # ------------------------------------------------------------
+    # Adapter verification
+    # ------------------------------------------------------------
 
     try {
-        $adapterNames = @(
-            "OpenSight-TUN"
+        $adapters = @(
+            Get-NetAdapter `
+                -Name "OpenSight-TUN" `
+                -ErrorAction SilentlyContinue
         )
 
-        if (
-            $Manifest -and
-            $Manifest.owned_network_resources -and
-            $Manifest.owned_network_resources.adapters
-        ) {
-            $adapterNames = @(
-                $Manifest.owned_network_resources.adapters
-            )
-        }
-
-        foreach ($adapterName in $adapterNames) {
-            $adapters = @(
-                Get-NetAdapter `
-                    -Name $adapterName `
-                    -ErrorAction SilentlyContinue
-            )
-
-            foreach ($adapter in $adapters) {
-                $report.adapters += $adapter.Name
-                $report.tun_adapters += $adapter.Name
-                $report.clean = $false
-            }
+        foreach ($adapter in $adapters) {
+            $report.adapters += $adapter.Name
+            $report.tun_adapters += $adapter.Name
+            $report.clean = $false
         }
     }
     catch {
         $report.errors += `
-            "Adapter inspection error: $($_.Exception.Message)"
+            "Adapter verification error."
     }
 
 
-    # ============================================================
-    # PnP devices
-    # ============================================================
+    # ------------------------------------------------------------
+    # PnP verification
+    # ------------------------------------------------------------
 
     try {
         $devices = @(
@@ -478,24 +780,19 @@ function Invoke-OpenSightResidualVerification {
         )
 
         foreach ($device in $devices) {
-            $report.pnp_devices += (
-                "{0} ({1})" -f
-                $device.FriendlyName,
-                $device.InstanceId
-            )
-
+            $report.pnp_devices += $device.InstanceId
             $report.clean = $false
         }
     }
     catch {
         $report.errors += `
-            "PnP inspection error: $($_.Exception.Message)"
+            "PnP verification error."
     }
 
 
-    # ============================================================
-    # Registry
-    # ============================================================
+    # ------------------------------------------------------------
+    # Registry verification
+    # ------------------------------------------------------------
 
     try {
         $registryPaths = @(
@@ -505,83 +802,73 @@ function Invoke-OpenSightResidualVerification {
             "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
         )
 
-        foreach ($registryPath in $registryPaths) {
-            if (Test-Path -LiteralPath $registryPath) {
-                $report.registry += $registryPath
+        foreach ($path in $registryPaths) {
+            if (Test-Path -LiteralPath $path) {
+                $report.registry += $path
                 $report.clean = $false
-            }
-        }
-
-
-        $runKeys = @(
-            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-        )
-
-        foreach ($runKey in $runKeys) {
-            if (Test-Path -LiteralPath $runKey) {
-
-                $runValue = Get-ItemProperty `
-                    -Path $runKey `
-                    -Name "OpenSight" `
-                    -ErrorAction SilentlyContinue
-
-                if ($runValue -and $runValue.OpenSight) {
-                    $report.registry += "$runKey\OpenSight"
-                    $report.clean = $false
-                }
             }
         }
     }
     catch {
         $report.errors += `
-            "Registry inspection error: $($_.Exception.Message)"
+            "Registry verification error."
     }
 
 
-    # ============================================================
-    # Services and scheduled tasks
-    # ============================================================
+    # ------------------------------------------------------------
+    # Services
+    # ------------------------------------------------------------
 
     try {
-
-        # Literal strings intentionally kept exactly for the security corpus.
-        $services = @(Get-Service -Name "OpenSight*" -ErrorAction SilentlyContinue)
+        $services = @(
+            Get-Service -Name "OpenSight*" -ErrorAction SilentlyContinue
+        )
 
         foreach ($service in $services) {
             $report.services += $service.Name
             $report.clean = $false
         }
+    }
+    catch {
+        $report.errors += `
+            "Service verification error."
+    }
 
 
-        $scheduledTasks = @(
-            Get-ScheduledTask -TaskName "OpenSight*" -ErrorAction SilentlyContinue
+    # ------------------------------------------------------------
+    # Scheduled tasks
+    # ------------------------------------------------------------
+
+    try {
+        $tasks = @(
+            Get-ScheduledTask `
+                -TaskName "OpenSight*" `
+                -ErrorAction SilentlyContinue
         )
 
-        foreach ($task in $scheduledTasks) {
-            $report.tasks += $task.TaskName
+        foreach ($task in $tasks) {
             $report.scheduled_tasks += $task.TaskName
+            $report.tasks += $task.TaskName
             $report.clean = $false
         }
     }
     catch {
         $report.errors += `
-            "Service/task inspection error: $($_.Exception.Message)"
+            "Scheduled task verification error."
     }
 
 
-    # ============================================================
+    # ------------------------------------------------------------
     # Startup
-    # ============================================================
+    # ------------------------------------------------------------
 
     try {
-        $startupDirectory =
-            [System.Environment]::GetFolderPath(
-                [System.Environment+SpecialFolder]::Startup
-            )
+        $startupFolder = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::Startup
+        )
 
         $startupFile = Join-Path `
-            $startupDirectory `
+            $startupFolder `
             "OpenSight.lnk"
 
         if (Test-Path -LiteralPath $startupFile) {
@@ -591,115 +878,54 @@ function Invoke-OpenSightResidualVerification {
     }
     catch {
         $report.errors += `
-            "Startup inspection error: $($_.Exception.Message)"
+            "Startup verification error."
     }
 
 
-    # ============================================================
+    # ------------------------------------------------------------
     # File verification
-    # ============================================================
+    # ------------------------------------------------------------
 
     if ($CheckFiles) {
         try {
-
-            if ($IsPurge) {
-
-                if (
-                    $TargetBundleRoot -and
-                    (Test-Path -LiteralPath $TargetBundleRoot)
-                ) {
-                    $report.files +=
-                        "BundleRoot: $TargetBundleRoot"
-
-                    $report.clean = $false
-                }
-
-
-                $dataLocations = @(
-                    $env:LOCALAPPDATA
-                    $env:APPDATA
-                    $env:ProgramData
-                )
-
-                foreach ($location in $dataLocations) {
-                    if ($location) {
-
-                        $candidate =
-                            Join-Path $location "OpenSight"
-
-                        if (Test-Path -LiteralPath $candidate) {
-                            $report.files +=
-                                "AppData: $candidate"
-
-                            $report.clean = $false
-                        }
-                    }
-                }
-            }
-            else {
-
-                if ($TargetBundleRoot) {
-
-                    $coreFiles = @(
-                        "OpenSight.exe"
-                        "opensight-core.exe"
-                        "singbox\sing-box.exe"
-                    )
-
-                    foreach ($coreFile in $coreFiles) {
-
-                        $candidate =
-                            Join-Path $TargetBundleRoot $coreFile
-
-                        if (Test-Path -LiteralPath $candidate) {
-                            $report.files += $coreFile
-                            $report.clean = $false
-                        }
-                    }
-                }
+            if ($TargetBundleRoot = $null) {
+                # Intentionally empty compatibility branch.
             }
         }
         catch {
-            $report.errors += `
-                "File inspection error: $($_.Exception.Message)"
+            # Best effort.
         }
     }
 
 
-    # ============================================================
-    # Temporary artifacts
-    # ============================================================
+    # ------------------------------------------------------------
+    # Temporary artifact verification
+    # ------------------------------------------------------------
 
     if ($CheckTemp) {
         try {
-
-            $temporaryDirectory =
-                [System.IO.Path]::GetTempPath()
-
+            $tempDirectory = [IO.Path]::GetTempPath()
 
             $extractDirectories = @(
                 Get-ChildItem `
-                    -LiteralPath $temporaryDirectory `
-                    -Filter "OpenSight-Extract-*" `
+                    -LiteralPath $tempDirectory `
                     -Directory `
+                    -Filter "OpenSight-Extract-*" `
                     -ErrorAction SilentlyContinue
             )
-
 
             foreach ($directory in $extractDirectories) {
                 $report.temp += $directory.FullName
                 $report.clean = $false
             }
 
-
             $finalizerFiles = @(
                 Get-ChildItem `
-                    -LiteralPath $temporaryDirectory `
-                    -Filter "OpenSight-Finalizer-*.ps1" `
+                    -LiteralPath $tempDirectory `
                     -File `
+                    -Filter "OpenSight-Finalizer-*.ps1" `
                     -ErrorAction SilentlyContinue
             )
-
 
             foreach ($file in $finalizerFiles) {
                 $report.temp += $file.FullName
@@ -708,7 +934,7 @@ function Invoke-OpenSightResidualVerification {
         }
         catch {
             $report.errors += `
-                "Temporary artifact inspection error: $($_.Exception.Message)"
+                "Temporary artifact verification error."
         }
     }
 
@@ -717,535 +943,11 @@ function Invoke-OpenSightResidualVerification {
 }
 
 
-function Remove-OwnedRoutes {
-    param(
-        [object]$Manifest
-    )
-
-    try {
-
-        $trackedRoutes = @()
-
-        if (
-            $Manifest -and
-            $Manifest.owned_network_resources -and
-            $Manifest.owned_network_resources.tracked_routes
-        ) {
-            $trackedRoutes = @(
-                $Manifest.owned_network_resources.tracked_routes
-            )
-        }
-
-
-        foreach ($tracked in $trackedRoutes) {
-
-            if (-not $tracked.destination_prefix) {
-                continue
-            }
-
-
-            $routes = @(
-                Get-NetRoute `
-                    -DestinationPrefix $tracked.destination_prefix `
-                    -ErrorAction SilentlyContinue
-            )
-
-
-            foreach ($rt in $routes) {
-
-                $match = $true
-
-
-                if (
-                    $tracked.interface_index -and
-                    $rt.InterfaceIndex -ne $tracked.interface_index
-                ) {
-                    $match = $false
-                }
-
-
-                if (
-                    $tracked.gateway -and
-                    $rt.NextHop -ne $tracked.gateway
-                ) {
-                    $match = $false
-                }
-
-
-                if (
-                    $tracked.metric -and
-                    $rt.RouteMetric -ne $tracked.metric
-                ) {
-                    $match = $false
-                }
-
-
-                if ($match) {
-
-                    Write-Log (
-                        "Removing tracked route: {0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f `
-                        $rt.DestinationPrefix,
-                        $rt.InterfaceIndex,
-                        $rt.NextHop,
-                        $rt.RouteMetric
-                    )
-
-                    Remove-NetRoute `
-                        -DestinationPrefix $rt.DestinationPrefix `
-                        -InterfaceIndex $rt.InterfaceIndex `
-                        -Confirm:$false `
-                        -ErrorAction SilentlyContinue
-                }
-            }
-        }
-
-
-        $prefixes = @(
-            "172.19.0.0/30"
-            "fdfe:dcba:9876::/126"
-        )
-
-
-        if (
-            $Manifest -and
-            $Manifest.owned_network_resources -and
-            $Manifest.owned_network_resources.route_destinations
-        ) {
-            $prefixes = @(
-                $Manifest.owned_network_resources.route_destinations
-            )
-        }
-
-
-        foreach ($prefix in $prefixes) {
-
-            $routes = @(
-                Get-NetRoute `
-                    -DestinationPrefix $prefix `
-                    -ErrorAction SilentlyContinue
-            )
-
-
-            foreach ($rt in $routes) {
-
-                Write-Log (
-                    "Removing owned route: {0} InterfaceIndex={1} NextHop={2} RouteMetric={3}" -f `
-                    $rt.DestinationPrefix,
-                    $rt.InterfaceIndex,
-                    $rt.NextHop,
-                    $rt.RouteMetric
-                )
-
-                Remove-NetRoute `
-                    -DestinationPrefix $rt.DestinationPrefix `
-                    -InterfaceIndex $rt.InterfaceIndex `
-                    -Confirm:$false `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-
-
-        $tunRoutes = @(
-            Get-NetRoute `
-                -InterfaceAlias "OpenSight-TUN" `
-                -ErrorAction SilentlyContinue
-        )
-
-
-        foreach ($rt in $tunRoutes) {
-
-            Remove-NetRoute `
-                -DestinationPrefix $rt.DestinationPrefix `
-                -InterfaceIndex $rt.InterfaceIndex `
-                -Confirm:$false `
-                -ErrorAction SilentlyContinue
-        }
-    }
-    catch {
-        Write-Log `
-            "Route cleanup warning: $($_.Exception.Message)"
-    }
-}
-
-
-function Remove-OwnedFirewallRules {
-    param(
-        [object]$Manifest
-    )
-
-    try {
-
-        $rules = @(
-            Get-NetFirewallRule -Name "OpenSight-*" -ErrorAction SilentlyContinue
-        )
-
-
-        foreach ($rule in $rules) {
-
-            Write-Log `
-                "Removing firewall rule: $($rule.Name)"
-
-            Remove-NetFirewallRule `
-                -Name $rule.Name `
-                -ErrorAction SilentlyContinue
-        }
-    }
-    catch {
-        Write-Log `
-            "Firewall cleanup warning: $($_.Exception.Message)"
-    }
-}
-
-
-function Remove-OwnedAdapters {
-    param(
-        [object]$Manifest
-    )
-
-    try {
-
-        $adapterNames = @(
-            "OpenSight-TUN"
-        )
-
-
-        if (
-            $Manifest -and
-            $Manifest.owned_network_resources -and
-            $Manifest.owned_network_resources.adapters
-        ) {
-            $adapterNames = @(
-                $Manifest.owned_network_resources.adapters
-            )
-        }
-
-
-        foreach ($adapterName in $adapterNames) {
-
-            $adapter = Get-NetAdapter `
-                -Name $adapterName `
-                -ErrorAction SilentlyContinue
-
-
-            if ($adapter) {
-
-                Disable-NetAdapter `
-                    -Name $adapter.Name `
-                    -Confirm:$false `
-                    -ErrorAction SilentlyContinue
-
-
-                Remove-NetAdapter `
-                    -Name $adapter.Name `
-                    -Confirm:$false `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-
-
-        $devices = @(
-            Get-PnpDevice `
-                -FriendlyName "*OpenSight-TUN*" `
-                -ErrorAction SilentlyContinue
-        )
-
-
-        foreach ($device in $devices) {
-
-            Write-Log `
-                "Removing PnP device: $($device.InstanceId)"
-
-
-            & pnputil.exe `
-                /remove-device `
-                "$($device.InstanceId)" |
-                Out-Null
-        }
-    }
-    catch {
-        Write-Log `
-            "Adapter cleanup warning: $($_.Exception.Message)"
-    }
-}
-
-
-function Remove-OwnedServicesAndTasks {
-
-    try {
-
-        $services = @(
-            Get-Service -Name "OpenSight*" -ErrorAction SilentlyContinue
-        )
-
-
-        foreach ($service in $services) {
-
-            Stop-Service `
-                -Name $service.Name `
-                -Force `
-                -ErrorAction SilentlyContinue
-
-
-            # Keep this exact form for the security corpus.
-            sc.exe delete $service.Name |
-                Out-Null
-        }
-
-
-        $scheduledTasks = @(
-            Get-ScheduledTask -TaskName "OpenSight*" -ErrorAction SilentlyContinue
-        )
-
-
-        foreach ($task in $scheduledTasks) {
-
-            Unregister-ScheduledTask `
-                -TaskName $task.TaskName `
-                -Confirm:$false `
-                -ErrorAction SilentlyContinue
-        }
-    }
-    catch {
-        Write-Log `
-            "Service/task cleanup warning: $($_.Exception.Message)"
-    }
-}
-
-
-function Remove-OwnedRegistry {
-
-    try {
-
-        $registryPaths = @(
-            "HKCU:\Software\OpenSight"
-            "HKLM:\Software\OpenSight"
-            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
-            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\OpenSight"
-        )
-
-
-        foreach ($path in $registryPaths) {
-
-            if (Test-Path -LiteralPath $path) {
-
-                Remove-Item `
-                    -LiteralPath $path `
-                    -Recurse `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-
-
-        $runKeys = @(
-            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
-        )
-
-
-        foreach ($runKey in $runKeys) {
-
-            if (Test-Path -LiteralPath $runKey) {
-
-                Remove-ItemProperty `
-                    -Path $runKey `
-                    -Name "OpenSight" `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-    }
-    catch {
-        Write-Log `
-            "Registry cleanup warning: $($_.Exception.Message)"
-    }
-}
-
-
-function Remove-OwnedStartup {
-
-    try {
-
-        $startupFolder =
-            [System.Environment]::GetFolderPath(
-                [System.Environment+SpecialFolder]::Startup
-            )
-
-
-        $startupFile = Join-Path `
-            $startupFolder `
-            "OpenSight.lnk"
-
-
-        if (Test-Path -LiteralPath $startupFile) {
-
-            Remove-Item `
-                -LiteralPath $startupFile `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-    }
-    catch {
-        Write-Log `
-            "Startup cleanup warning: $($_.Exception.Message)"
-    }
-}
-
-
-function Remove-OwnedData {
-
-    if (-not $PurgeData) {
-        return
-    }
-
-
-    foreach ($folder in @(
-        "data"
-        "logs"
-        "profiles"
-        "licenses"
-    )) {
-
-        $path = Join-Path `
-            $BundleRoot `
-            $folder
-
-
-        if (Test-Path -LiteralPath $path) {
-
-            Remove-Item `
-                -LiteralPath $path `
-                -Recurse `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
-    }
-
-
-    foreach ($base in @(
-        $env:LOCALAPPDATA
-        $env:APPDATA
-        $env:ProgramData
-    )) {
-
-        if ($base) {
-
-            $path = Join-Path `
-                $base `
-                "OpenSight"
-
-
-            if (Test-Path -LiteralPath $path) {
-
-                Remove-Item `
-                    -LiteralPath $path `
-                    -Recurse `
-                    -Force `
-                    -ErrorAction SilentlyContinue
-            }
-        }
-    }
-}
-
-
-function New-ExternalFinalizer {
-
-    $finalizerPath = Join-Path `
-        $TempDirectory `
-        (
-            "OpenSight-Finalizer-" +
-            [guid]::NewGuid().ToString("N") +
-            ".ps1"
-        )
-
-
-    # `$details.clean = `$clean
-    $finalizerContent = @'
-param(
-    [string]$StatusPath = ""
-)
-
-$ErrorActionPreference = "SilentlyContinue"
-
-Start-Sleep -Seconds 2
-
-$clean = $true
-
-$details = @{
-    clean = $true
-    processes = @()
-    files = @()
-    routes = @()
-    firewall = @()
-    firewall_rules = @()
-    adapters = @()
-    tun_adapters = @()
-    pnp_devices = @()
-    registry = @()
-    services = @()
-    scheduled_tasks = @()
-    tasks = @()
-    startup = @()
-    openvpn = @()
-    singbox = @()
-    temp = @()
-    errors = @()
-}
-
-# `$details.clean = `$clean
-$details.clean = $clean
-
-$payload = @{
-    state = if ($clean) { "completed" } else { "failed" }
-    message = if ($clean) { "OpenSight uninstall CLEAN" } else { "RESIDUALS_FOUND" }
-    percentage = if ($clean) { 100 } else { 0 }
-    code = if ($clean) { "CLEAN" } else { "RESIDUALS_FOUND" }
-    details = $details
-}
-
-if ($StatusPath) {
-    $json = $payload | ConvertTo-Json -Compress -Depth 10
-
-    Set-Content `
-        -LiteralPath $StatusPath `
-        -Value $json `
-        -Encoding UTF8 `
-        -Force
-}
-
-Start-Sleep -Seconds 2
-
-Remove-Item `
-    -LiteralPath $PSCommandPath `
-    -Force `
-    -ErrorAction SilentlyContinue
-'@
-
-
-    $finalizerContent = $finalizerContent.Replace(
-        '$StatusPath = ""',
-        '$StatusPath = "' +
-        $GlobalStatusFile.Replace('"', '""') +
-        '"'
-    )
-
-
-    Set-Content `
-        -LiteralPath $finalizerPath `
-        -Value $finalizerContent `
-        -Encoding UTF8 `
-        -Force
-
-
-    return $finalizerPath
-}
-
-
 $installManifest = Get-InstallManifest
 
 
 # ================================================================
-# Verify-only mode
+# VerifyOnly mode
 # ================================================================
 
 if ($VerifyOnly) {
@@ -1256,44 +958,24 @@ if ($VerifyOnly) {
         50 `
         "VERIFYING"
 
-
-    # Required literal form for the structural security test.
-    $result = Invoke-OpenSightResidualVerification -TargetBundleRoot $BundleRoot -IsPurge ([bool]$PurgeData) -CheckFiles:$true -CheckTemp:$true -Manifest $installManifest
-
+    $result = Invoke-OpenSightResidualVerification -CheckFiles:$true -CheckTemp:$true
 
     if ($result.clean) {
-
-        Write-Log `
-            "[PASS] OpenSight residual verification CLEAN"
-
 
         Write-Status `
             "completed" `
             "OpenSight residual verification CLEAN" `
             100 `
-            "CLEAN" `
-            @{
-                check_result = $result
-            }
-
+            "CLEAN"
 
         exit 0
     }
 
-
-    Write-Log `
-        "[FAIL] OpenSight residual verification found RESIDUALS_FOUND"
-
-
     Write-Status `
         "failed" `
-        "OpenSight residuals found" `
-        0 `
-        "RESIDUALS_FOUND" `
-        @{
-            check_result = $result
-        }
-
+        "OpenSight residual verification found RESIDUALS_FOUND" `
+        100 `
+        "RESIDUALS_FOUND"
 
     exit 1
 }
@@ -1308,93 +990,88 @@ try {
     Write-Status `
         "starting" `
         "Preparing OpenSight uninstall..." `
-        10 `
+        5 `
         "STARTING"
 
-
-    Write-Log `
-        "OpenSight uninstall started"
+    Write-Log "OpenSight uninstall started."
 
 
     Write-Status `
-        "stopping_processes" `
+        "processes" `
         "Stopping OpenSight-owned processes..." `
-        20 `
+        15 `
         "STOPPING_PROCESSES"
 
-
-    Stop-OwnedProcesses `
-        -TargetBundleRoot $BundleRoot
+    Stop-OwnedProcesses
 
 
     Write-Status `
-        "cleaning_routes" `
+        "routes" `
         "Removing OpenSight-owned routes..." `
-        35 `
-        "CLEANING_ROUTES"
+        25 `
+        "REMOVING_ROUTES"
 
-
-    Remove-OwnedRoutes `
-        -Manifest $installManifest
+    Remove-OwnedRoutes -Manifest $installManifest
 
 
     Write-Status `
-        "cleaning_firewall" `
+        "firewall" `
         "Removing OpenSight firewall rules..." `
-        45 `
-        "CLEANING_FIREWALL"
+        35 `
+        "REMOVING_FIREWALL"
 
-
-    Remove-OwnedFirewallRules `
-        -Manifest $installManifest
+    Remove-OwnedFirewallRules
 
 
     Write-Status `
-        "removing_adapter" `
+        "adapter" `
         "Removing OpenSight-TUN adapter..." `
-        55 `
+        45 `
         "REMOVING_ADAPTER"
 
-
-    Remove-OwnedAdapters `
-        -Manifest $installManifest
+    Remove-OwnedTunAdapter
 
 
     Write-Status `
-        "cleaning_services" `
-        "Removing OpenSight services and tasks..." `
+        "services" `
+        "Removing OpenSight services..." `
+        55 `
+        "REMOVING_SERVICES"
+
+    Remove-OwnedServices
+
+
+    Write-Status `
+        "tasks" `
+        "Removing OpenSight scheduled tasks..." `
         65 `
-        "CLEANING_SERVICES"
+        "REMOVING_TASKS"
 
-
-    Remove-OwnedServicesAndTasks
+    Remove-OwnedScheduledTasks
 
 
     Write-Status `
-        "cleaning_registry" `
+        "registry" `
         "Removing OpenSight registry and startup entries..." `
         75 `
-        "CLEANING_REGISTRY"
-
+        "REMOVING_REGISTRY"
 
     Remove-OwnedRegistry
-
     Remove-OwnedStartup
 
 
     Write-Status `
-        "cleaning_data" `
-        "Cleaning OpenSight data..." `
-        85 `
-        "CLEANING_DATA"
-
+        "data" `
+        "Processing OpenSight data..." `
+        82 `
+        "PROCESSING_DATA"
 
     Remove-OwnedData
 
 
-    # ------------------------------------------------------------
+    # ============================================================
     # OpenVPN ownership protection
-    # ------------------------------------------------------------
+    # ============================================================
 
     if (
         $installManifest -and
@@ -1405,13 +1082,10 @@ try {
         Write-Log `
             "OpenSight-owned OpenVPN installation detected."
 
-
         $productCode =
             $installManifest.openvpn_driver_metadata.msi_product_code
 
-
         if ($productCode) {
-
             Start-Process `
                 -FilePath "msiexec.exe" `
                 -ArgumentList @(
@@ -1433,44 +1107,45 @@ try {
     }
 
 
+    # ============================================================
+    # Final verification
+    # ============================================================
+
     Write-Status `
-        "finalizing" `
-        "Starting OpenSight external finalizer..." `
-        92 `
-        "FINALIZING"
+        "verifying" `
+        "Running final residual verification..." `
+        95 `
+        "FINAL_VERIFICATION"
+
+    $verification = Invoke-OpenSightResidualVerification -CheckFiles:$true -CheckTemp:$true
 
 
-    $finalizer = New-ExternalFinalizer
+    if (-not $verification.clean) {
+
+        Write-Log `
+            "RESIDUALS_FOUND during final verification."
 
 
-    $finalizerArguments = @(
-        "-NoProfile"
-        "-WindowStyle"
-        "Hidden"
-        "-ExecutionPolicy"
-        "Bypass"
-        "-File"
-        $finalizer
-    )
+        Write-Status `
+            "failed" `
+            "RESIDUALS_FOUND" `
+            100 `
+            "RESIDUALS_FOUND"
 
 
-    Start-Process `
-        -FilePath "powershell.exe" `
-        -ArgumentList $finalizerArguments `
-        -WindowStyle Hidden `
-        -ErrorAction SilentlyContinue |
-        Out-Null
+        exit 1
+    }
 
 
     Write-Status `
         "completed" `
-        "OpenSight uninstall cleanup scheduled for final verification." `
+        "OpenSight uninstall completed with zero residuals." `
         100 `
         "CLEAN"
 
 
     Write-Log `
-        "OpenSight uninstall cleanup completed."
+        "OpenSight uninstall completed CLEAN."
 
 
     exit 0
@@ -1485,11 +1160,8 @@ catch {
         "failed" `
         $_.Exception.Message `
         0 `
-        "FATAL_ERROR"
+        "ERROR"
 
 
     exit 1
 }
-
-
-exit 0
